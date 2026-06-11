@@ -9,12 +9,12 @@ macro(
   message(STATUS "** Enabling Hardening (Target ${target}) **")
 
   if(MSVC)
-    list(APPEND NEW_COMPILE_OPTIONS /sdl /DYNAMICBASE /guard:cf)
+    list(APPEND NEW_COMPILE_OPTIONS /sdl /guard:cf)
     message(STATUS "*** MSVC flags: /sdl /DYNAMICBASE /guard:cf /NXCOMPAT /CETCOMPAT")
-    list(APPEND NEW_LINK_OPTIONS /NXCOMPAT /CETCOMPAT)
+    list(APPEND NEW_LINK_OPTIONS /DYNAMICBASE /NXCOMPAT /CETCOMPAT /guard:cf)
 
   elseif(CMAKE_CXX_COMPILER_ID MATCHES ".*Clang|GNU")
-    list(APPEND NEW_CXX_DEFINITIONS -D_GLIBCXX_ASSERTIONS)
+    list(APPEND NEW_CXX_DEFINITIONS _GLIBCXX_ASSERTIONS)
     message(STATUS "*** GLIBC++ Assertions (vector[], string[], ...) enabled")
 
     if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")

@@ -21,6 +21,9 @@ endif()
 
 if(NOT TARGET Catch2::Catch2WithMain)
   find_package(Catch2 3 CONFIG REQUIRED)
+elseif(DEFINED Catch2_SOURCE_DIR)
+  # Catch2 came from CPM; its extras/ is not on the module path
+  list(APPEND CMAKE_MODULE_PATH "${Catch2_SOURCE_DIR}/extras")
 endif()
 include(Catch)
 # Provide a simple smoke test to make sure that the CLI works and can display a --help message

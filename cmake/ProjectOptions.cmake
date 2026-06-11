@@ -11,9 +11,15 @@ macro(kinectfusion_supports_sanitizers)
     set(TEST_PROGRAM "int main() { return 0; }")
 
     # Check if UndefinedBehaviorSanitizer works at link time
+    set(_old_required_flags "${CMAKE_REQUIRED_FLAGS}")
+    set(_old_required_link_options "${CMAKE_REQUIRED_LINK_OPTIONS}")
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
     set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=undefined")
     check_cxx_source_compiles("${TEST_PROGRAM}" HAS_UBSAN_LINK_SUPPORT)
+    set(CMAKE_REQUIRED_FLAGS "${_old_required_flags}")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "${_old_required_link_options}")
+    unset(_old_required_flags)
+    unset(_old_required_link_options)
 
     if(HAS_UBSAN_LINK_SUPPORT)
       message(STATUS "UndefinedBehaviorSanitizer is supported at both compile and link time.")
@@ -34,9 +40,15 @@ macro(kinectfusion_supports_sanitizers)
       set(TEST_PROGRAM "int main() { return 0; }")
 
       # Check if AddressSanitizer works at link time
+      set(_old_required_flags "${CMAKE_REQUIRED_FLAGS}")
+      set(_old_required_link_options "${CMAKE_REQUIRED_LINK_OPTIONS}")
       set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
       set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address")
       check_cxx_source_compiles("${TEST_PROGRAM}" HAS_ASAN_LINK_SUPPORT)
+      set(CMAKE_REQUIRED_FLAGS "${_old_required_flags}")
+      set(CMAKE_REQUIRED_LINK_OPTIONS "${_old_required_link_options}")
+      unset(_old_required_flags)
+      unset(_old_required_link_options)
 
       if(HAS_ASAN_LINK_SUPPORT)
         message(STATUS "AddressSanitizer is supported at both compile and link time.")

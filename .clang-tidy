@@ -1,8 +1,10 @@
 ---
+# NewDeleteLeaks: false positive on libc++ std::function copy in CLI11 headers
 Checks: "*,
         -abseil-*,
         -altera-*,
         -android-*,
+        -clang-analyzer-cplusplus.NewDeleteLeaks,
         -fuchsia-*,
         -google-*,
         -llvm*,

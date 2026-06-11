@@ -70,6 +70,11 @@ function(
     )
   endif()
 
+  # clang 21 pedantically flags Catch2's __COUNTER__ as a C2y extension
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 21)
+    list(APPEND CLANG_WARNINGS -Wno-c2y-extensions)
+  endif()
+
   if("${CUDA_WARNINGS}" STREQUAL "")
     set(CUDA_WARNINGS
         -Wall

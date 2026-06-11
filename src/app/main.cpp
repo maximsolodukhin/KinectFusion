@@ -15,9 +15,13 @@ int main(int argc, const char **argv)
 
     CLI11_PARSE(app, argc, argv);
 
-    spdlog::info("Hello, world! factorial(5) = {}", factorial(5));
+    spdlog::info("Hello, world! factorial(4) = {}", factorial(4));
   } catch (const std::exception &e) {
-    spdlog::error("Unhandled exception in main: {}", e.what());
+    try {
+      spdlog::error("Unhandled exception in main: {}", e.what());
+    } catch (...) {
+      return EXIT_FAILURE;
+    }
     return EXIT_FAILURE;
   }
 

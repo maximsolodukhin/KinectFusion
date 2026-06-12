@@ -4,7 +4,7 @@ target_link_libraries(
   intro
   PRIVATE kinectfusion::kinectfusion_options
           kinectfusion::kinectfusion_warnings
-          kinectfusion::sample_library
+          kinectfusion::kinectfusion
           CLI11::CLI11
           spdlog::spdlog)
 

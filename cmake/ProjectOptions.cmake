@@ -67,6 +67,7 @@ endmacro()
 macro(kinectfusion_setup_options)
   option(KINECTFUSION_ENABLE_HARDENING "Enable hardening" ON)
   option(KINECTFUSION_ENABLE_COVERAGE "Enable coverage reporting" OFF)
+  option(KINECTFUSION_ENABLE_CUDA "Build the CUDA backend" OFF)
   kinectfusion_supports_sanitizers()
 
   if(NOT PROJECT_IS_TOP_LEVEL OR KINECTFUSION_PACKAGING_MAINTAINER_MODE)

@@ -6,5 +6,5 @@ else()
   set(WARNING_GUARD SYSTEM)
 endif()
 
-add_subdirectory(lib)
+add_subdirectory(kinectfusion)
 add_subdirectory(app)

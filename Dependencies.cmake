@@ -116,6 +116,20 @@ function(kinectfusion_setup_dependencies)
       YES)
   endif()
 
+  if(NOT TARGET spng_static)
+    cpmaddpackage(
+      NAME
+      libspng
+      VERSION
+      0.7.4
+      GITHUB_REPOSITORY
+      "randy408/libspng"
+      SYSTEM
+      YES
+      OPTIONS
+      "SPNG_SHARED OFF")
+  endif()
+
   kinectfusion_setup_ceres()
 
   # if(NOT TARGET ftxui::screen)

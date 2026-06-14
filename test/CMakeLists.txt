@@ -50,6 +50,7 @@ target_link_libraries(
   tests
   PRIVATE kinectfusion::kinectfusion_warnings
           kinectfusion::kinectfusion_options
+          kinectfusion::kinectfusion
           kinectfusion::sample_library
           Catch2::Catch2WithMain)
 

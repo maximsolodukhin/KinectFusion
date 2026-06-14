@@ -1,0 +1,18 @@
+name: kinectfusion
+
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    image: kinectfusion-dev
+    container_name: kinectfusion-dev
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: sleep infinity
+
+  kinectfusion:
+    build:
+      context: .
+    image: kinectfusion

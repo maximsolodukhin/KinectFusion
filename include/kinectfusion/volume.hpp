@@ -2,6 +2,7 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_VOLUME_HPP
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -191,7 +192,7 @@ class Volume {
   }
 
   [[nodiscard]] std::size_t index(int x, int y, int z) const {
-    std::assert(in_bounds(x, y, z) && "Voxel coordinates out of bounds");
+    assert(in_bounds(x, y, z) && "Voxel coordinates out of bounds");
     const auto ux = static_cast<std::size_t>(x);
     const auto uy = static_cast<std::size_t>(y);
     const auto uz = static_cast<std::size_t>(z);

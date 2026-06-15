@@ -199,6 +199,7 @@ class VirtualSensor {
   image_proc::ColorImage color_image_;
   Eigen::Matrix4f current_trajectory_{Eigen::Matrix4f::Identity()};
 
+  // default TUM RGBD camera intrinsics
   CameraIntrinsics color_intrinsics_{517.3F, 516.5F, 318.6F, 255.3F};
   CameraIntrinsics depth_intrinsics_{517.3F, 516.5F, 318.6F, 255.3F};
   Eigen::Matrix4f color_extrinsics_{Eigen::Matrix4f::Identity()};

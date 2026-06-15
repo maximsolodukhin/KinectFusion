@@ -162,13 +162,30 @@ SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
       .origin = options.camera_to_world.block<3, 1>(0, 3),
       .base_step = voxel_size_ * options.step_scale};
 
-  for (unsigned int y = 0; y < options.height; ++y) {
-    for (unsigned int x = 0; x < options.width; ++x) {
-      raycast_pixel(options, context, ImagePixel{.x = x, .y = y}, maps);
+  for (unsigned int row = 0; row < options.height; ++row) {
+    for (unsigned int col = 0; col < options.width; ++col) {
+      raycast_pixel(options, context, ImagePixel{.x = col, .y = row}, maps);
     }
   }
 
   return maps;
+}
+
+void Volume::integrate_color(int x, int y, int z, std::uint32_t color,
+                       float observation_weight, float max_weight) {
+  auto& voxel = colors_[index(x, y, z)];
+  const auto rgba = rgba_from_pixel(color);
+  const float blended_weight = voxel.weight + observation_weight;
+  voxel.r = ((voxel.r * voxel.weight) +
+             (static_cast<float>(rgba.x()) * observation_weight)) /
+            blended_weight;
+  voxel.g = ((voxel.g * voxel.weight) +
+             (static_cast<float>(rgba.y()) * observation_weight)) /
+            blended_weight;
+  voxel.b = ((voxel.b * voxel.weight) +
+             (static_cast<float>(rgba.z()) * observation_weight)) /
+            blended_weight;
+  voxel.weight = std::min(blended_weight, max_weight);
 }
 
 Volume::GridSamplePosition Volume::grid_sample_position(
@@ -210,15 +227,15 @@ bool Volume::sample_tsdf(const Eigen::Vector3f& point, float& distance) const {
     }
   }
 
-  if (weight_sum <= 0.0F) {
+  if (weight_sum < 1e-6F) {
     return false;
   }
 
   distance = result / weight_sum;
-  return true;
+  return std::isfinite(distance);
 }
 
-bool Volume::sample_tsdf_relaxed(const Eigen::Vector3f& point,
+bool Volume::sample_tsdf_valid_corners(const Eigen::Vector3f& point,
                                           float& distance) const {
   if (!contains(point)) {
     return false;
@@ -227,18 +244,33 @@ bool Volume::sample_tsdf_relaxed(const Eigen::Vector3f& point,
   const auto position = grid_sample_position(point);
 
   float result = 0.0F;
+  float weight_sum = 0.0F;
   for (int dx = 0; dx <= 1; ++dx) {
     for (int dy = 0; dy <= 1; ++dy) {
       for (int dz = 0; dz <= 1; ++dz) {
-        const auto value =
-            relaxed_tsdf_corner(position.base_x + dx, position.base_y + dy,
-                                position.base_z + dz);
-        result += trilinear_weight(position, dx, dy, dz) * value;
+        const int x = position.base_x + dx;
+        const int y = position.base_y + dy;
+        const int z = position.base_z + dz;
+        if (!in_bounds(x, y, z)) {
+            continue;
+        }
+
+        const auto& voxel = at(x, y, z);
+        if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
+            continue;
+        }
+
+        const float weight = trilinear_weight(position, dx, dy, dz);
+        result += weight * voxel.distance;
+        weight_sum += weight;
       }
     }
   }
 
-  distance = result;
+  if (weight_sum < 1e-6F) {
+    return false;
+  }
+  distance = result / weight_sum;
   return std::isfinite(distance);
 }
 
@@ -264,21 +296,8 @@ bool Volume::strict_tsdf_corner(int x, int y, int z, float& distance) const {
   return true;
 }
 
-float Volume::relaxed_tsdf_corner(int x, int y, int z) const {
-  if (!in_bounds(x, y, z)) {
-    return 0.0F;
-  }
-
-  const auto& voxel = at(x, y, z);
-  if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
-    return 0.0F;
-  }
-
-  return voxel.distance;
-}
-
 bool Volume::sample_normal(const Eigen::Vector3f& point, Eigen::Vector3f& normal,
-                           bool missing_tsdf_as_zero) const {
+                           bool tsdf_from_valid_corners) const {
   float x_plus = 0.0F;
   float x_minus = 0.0F;
   float y_plus = 0.0F;
@@ -290,10 +309,10 @@ bool Volume::sample_normal(const Eigen::Vector3f& point, Eigen::Vector3f& normal
   const Eigen::Vector3f dz{0.0F, 0.0F, voxel_size_};
 
   const auto sample =
-      [this, missing_tsdf_as_zero](const Eigen::Vector3f& sample_point,
+      [this, tsdf_from_valid_corners](const Eigen::Vector3f& sample_point,
                                    float& distance) {
-        return missing_tsdf_as_zero
-                   ? sample_tsdf_relaxed(sample_point, distance)
+        return tsdf_from_valid_corners
+                   ? sample_tsdf_valid_corners(sample_point, distance)
                    : sample_tsdf(sample_point, distance);
       };
 
@@ -305,7 +324,7 @@ bool Volume::sample_normal(const Eigen::Vector3f& point, Eigen::Vector3f& normal
 
   normal = Eigen::Vector3f{x_plus - x_minus, y_plus - y_minus, z_plus - z_minus};
   const float norm = normal.norm();
-  if (!normal.allFinite() || norm == 0.0F) {
+  if (!normal.allFinite() || norm < 1e-6F) {
     return false;
   }
 
@@ -388,8 +407,8 @@ void Volume::raycast_pixel(const RaycastOptions& options,
 
     float current_tsdf = 0.0F;
     const bool sampled =
-        options.missing_tsdf_as_zero
-            ? sample_tsdf_relaxed(point, current_tsdf)
+        options.tsdf_from_valid_corners
+            ? sample_tsdf_valid_corners(point, current_tsdf)
             : sample_tsdf(point, current_tsdf);
     if (!sampled) {
       ray_length += context.base_step;
@@ -404,7 +423,7 @@ void Volume::raycast_pixel(const RaycastOptions& options,
           previous_point + (alpha * (point - previous_point));
 
       Eigen::Vector3f normal;
-      if (sample_normal(surface_point, normal, options.missing_tsdf_as_zero)) {
+      if (sample_normal(surface_point, normal, options.tsdf_from_valid_corners)) {
         maps.points.at(pixel.x, pixel.y) = surface_point;
         maps.normals.at(pixel.x, pixel.y) = normal;
         maps.colors.at(pixel.x, pixel.y) = rgba_to_uint32(sample_color(surface_point));

@@ -33,6 +33,10 @@ void validate_options(const DepthProcessingOptions& options) {
   if (options.max_normal_depth_jump < 0.0F) {
     throw std::invalid_argument("Normal depth jump threshold must be non-negative");
   }
+  if (options.max_downsample_depth_jump < 0.0F) {
+    throw std::invalid_argument(
+        "Downsample depth jump threshold must be non-negative");
+  }
   if (options.bilateral_radius < 0) {
     throw std::invalid_argument("Bilateral filter radius must be non-negative");
   }
@@ -120,10 +124,15 @@ void validate_options(const DepthProcessingOptions& options) {
     return 0;
   }
 
-  return static_cast<std::uint16_t>(
-      std::lround((accumulation.weighted_depth_sum /
+  const auto rounded_depth = std::lround((accumulation.weighted_depth_sum /
                    accumulation.weight_sum) *
-                  options.depth_scale));
+                  options.depth_scale);
+    
+  if (rounded_depth <= 0 || rounded_depth > std::numeric_limits<std::uint16_t>::max()) {
+    return 0;
+  }
+
+  return static_cast<std::uint16_t>(rounded_depth);
 }
 
 [[nodiscard]] std::vector<std::uint16_t> valid_downsample_candidates(
@@ -159,7 +168,7 @@ void validate_options(const DepthProcessingOptions& options) {
       depth_to_meters(candidates.front(), options.depth_scale);
   const auto max_depth_m =
       depth_to_meters(candidates.back(), options.depth_scale);
-  if (max_depth_m - min_depth_m > options.max_normal_depth_jump) {
+  if (max_depth_m - min_depth_m > options.max_downsample_depth_jump) {
     return 0;
   }
 
@@ -167,6 +176,7 @@ void validate_options(const DepthProcessingOptions& options) {
   for (const auto candidate : candidates) {
     sum += candidate;
   }
+  
   return static_cast<std::uint16_t>(
       std::lround(static_cast<double>(sum) /
                   static_cast<double>(candidates.size())));
@@ -176,11 +186,11 @@ void compute_paper_forward_normals(
     const image_proc::Image<Eigen::Vector3f>& vertices,
     image_proc::Image<Eigen::Vector3f>& normals,
     const DepthProcessingOptions& options) {
-  for (unsigned int y = 0; y + 1 < vertices.height(); ++y) {
-    for (unsigned int x = 0; x + 1 < vertices.width(); ++x) {
-      const auto& center = vertices.at(x, y);
-      const auto& right = vertices.at(x + 1, y);
-      const auto& down = vertices.at(x, y + 1);
+  for (unsigned int row = 0; row + 1 < vertices.height(); ++row) {
+    for (unsigned int col = 0; col + 1 < vertices.width(); ++col) {
+      const auto& center = vertices.at(col, row);
+      const auto& right = vertices.at(col + 1, row);
+      const auto& down = vertices.at(col, row + 1);
 
       if (!center.allFinite() || !right.allFinite() || !down.allFinite()) {
         continue;
@@ -192,10 +202,10 @@ void compute_paper_forward_normals(
       }
 
       const auto normal = (down - center).cross(right - center);
-      if (!normal.allFinite() || normal.norm() == 0.0F) {
+      if (!normal.allFinite() || normal.norm() < 1e-12F) {
         continue;
       }
-      normals.at(x, y) = normal.normalized();
+      normals.at(col, row) = normal.normalized();
     }
   }
 }
@@ -204,13 +214,13 @@ void compute_central_difference_normals(
     const image_proc::Image<Eigen::Vector3f>& vertices,
     image_proc::Image<Eigen::Vector3f>& normals,
     const DepthProcessingOptions& options) {
-  for (unsigned int y = 1; y + 1 < vertices.height(); ++y) {
-    for (unsigned int x = 1; x + 1 < vertices.width(); ++x) {
-      const auto& center = vertices.at(x, y);
-      const auto& left = vertices.at(x - 1, y);
-      const auto& right = vertices.at(x + 1, y);
-      const auto& up = vertices.at(x, y - 1);
-      const auto& down = vertices.at(x, y + 1);
+  for (unsigned int row = 1; row + 1 < vertices.height(); ++row) {
+    for (unsigned int col = 1; col + 1 < vertices.width(); ++col) {
+      const auto& center = vertices.at(col, row);
+      const auto& left = vertices.at(col - 1, row);
+      const auto& right = vertices.at(col + 1, row);
+      const auto& up = vertices.at(col, row - 1);
+      const auto& down = vertices.at(col, row + 1);
 
       if (!center.allFinite() || !left.allFinite() || !right.allFinite() ||
           !up.allFinite() || !down.allFinite()) {
@@ -223,10 +233,10 @@ void compute_central_difference_normals(
       }
 
       const auto normal = (down - up).cross(right - left);
-      if (!normal.allFinite() || normal.norm() == 0.0F) {
+      if (!normal.allFinite() || normal.norm() < 1e-12F) {
         continue;
       }
-      normals.at(x, y) = normal.normalized();
+      normals.at(col, row) = normal.normalized();
     }
   }
 }
@@ -245,11 +255,11 @@ image_proc::DepthImage bilateral_filter_depth(
   image_proc::DepthImage filtered{depth_image.width(), depth_image.height()};
   std::ranges::fill(filtered.data(), std::uint16_t{});
 
-  for (unsigned int y = 0; y < depth_image.height(); ++y) {
-    for (unsigned int x = 0; x < depth_image.width(); ++x) {
-      filtered.at(x, y) =
-          filtered_depth_at_pixel(depth_image, ImagePixel{.x = x, .y = y},
-                                  options);
+  for (unsigned int row = 0; row < depth_image.height(); ++row) {
+    for (unsigned int col = 0; col < depth_image.width(); ++col) {
+      filtered.at(col, row) =
+          filtered_depth_at_pixel(depth_image, ImagePixel{.x = col, .y = row},
+                                   options);
     }
   }
 
@@ -273,10 +283,10 @@ DepthPyramid build_depth_pyramid(const image_proc::DepthImage& depth_image,
     }
 
     image_proc::DepthImage current{width, height};
-    for (unsigned int y = 0; y < height; ++y) {
-      for (unsigned int x = 0; x < width; ++x) {
-        current.at(x, y) =
-            downsample_depth_pixel(previous, ImagePixel{.x = x, .y = y},
+    for (unsigned int row = 0; row < height; ++row) {
+      for (unsigned int col = 0; col < width; ++col) {
+        current.at(col, row) =
+            downsample_depth_pixel(previous, ImagePixel{.x = col, .y = row},
                                    options);
       }
     }
@@ -308,9 +318,9 @@ image_proc::Image<Eigen::Vector3f> back_project_depth(
                                        depth_image.height()};
   std::ranges::fill(vertices.data(), invalid_vector());
 
-  for (unsigned int y = 0; y < depth_image.height(); ++y) {
-    for (unsigned int x = 0; x < depth_image.width(); ++x) {
-      const auto raw = depth_image.at(x, y);
+  for (unsigned int row = 0; row < depth_image.height(); ++row) {
+    for (unsigned int col = 0; col < depth_image.width(); ++col) {
+      const auto raw = depth_image.at(col, row);
       if (raw == 0) {
         continue;
       }
@@ -321,12 +331,12 @@ image_proc::Image<Eigen::Vector3f> back_project_depth(
       }
 
       const auto camera_point = Eigen::Vector4f{
-          (static_cast<float>(x) - intrinsics.cx) * depth_m / intrinsics.fx,
-          (static_cast<float>(y) - intrinsics.cy) * depth_m / intrinsics.fy,
+          (static_cast<float>(col) - intrinsics.cx) * depth_m / intrinsics.fx,
+          (static_cast<float>(row) - intrinsics.cy) * depth_m / intrinsics.fy,
           depth_m,
           1
       };
-      vertices.at(x, y) = (camera_to_world * camera_point).head<3>();
+      vertices.at(col, row) = (camera_to_world * camera_point).head<3>();
     }
   }
 

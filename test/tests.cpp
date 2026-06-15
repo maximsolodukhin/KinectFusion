@@ -161,7 +161,7 @@ TEST_CASE("Volume integrates and raycasts a synthetic depth plane", "[volume]") 
       .min_depth = 0.2F,
       .max_depth = 2.0F,
       .step_scale = 1.0F,
-      .missing_tsdf_as_zero = true});
+      .tsdf_from_valid_corners = true});
 
   REQUIRE(valid_raycast_pixels(maps) > 0);
 }
@@ -207,7 +207,6 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
   const kinectfusion::ProjectiveIcpTracker tracker{
       kinectfusion::ProjectiveIcpOptions{
           .iterations = 15,
-          .solver_iterations = 5,
           .min_correspondences = 6,
           .max_point_distance = 0.1F,
           .min_normal_dot = 0.9F,

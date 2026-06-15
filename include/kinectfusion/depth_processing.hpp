@@ -16,9 +16,10 @@ enum class NormalComputation {
 struct DepthProcessingOptions {
   unsigned int levels{3};
   float depth_scale{kTumDepthScale};
-  float min_depth{0.2F};
-  float max_depth{5.0F};
+  float min_depth{0.4F};
+  float max_depth{8.0F};
   float max_normal_depth_jump{0.1F};
+  float max_downsample_depth_jump{0.1F};
   bool bilateral_filter{true};
   int bilateral_radius{2};
   float bilateral_spatial_sigma{2.0F};

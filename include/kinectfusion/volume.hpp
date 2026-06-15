@@ -22,8 +22,8 @@ struct TsdfIntegrationOptions {
   float depth_scale{kTumDepthScale};
   float observation_weight{1.0F};
   float max_weight{100.0F};
-  float min_depth{0.2F};
-  float max_depth{5.0F};
+  float min_depth{0.4F};
+  float max_depth{8.0F};
   bool projective_distance{true};
   bool distance_scaled_truncation{true};
   float truncation_distance_scale{0.01F};
@@ -49,10 +49,10 @@ struct RaycastOptions {
   unsigned int width{};
   unsigned int height{};
   Eigen::Matrix4f camera_to_world{Eigen::Matrix4f::Identity()};
-  float min_depth{0.2F};
-  float max_depth{5.0F};
+  float min_depth{0.4F};
+  float max_depth{8.0F};
   float step_scale{1.0F};
-  bool missing_tsdf_as_zero{false};
+  bool tsdf_from_valid_corners{false};
 };
 
 struct SurfaceMaps {
@@ -191,9 +191,11 @@ class Volume {
   }
 
   [[nodiscard]] std::size_t index(int x, int y, int z) const {
-    return (static_cast<std::size_t>(z) * resolution_.y() + y) *
-               resolution_.x() +
-           x;
+    std::assert(in_bounds(x, y, z) && "Voxel coordinates out of bounds");
+    const auto ux = static_cast<std::size_t>(x);
+    const auto uy = static_cast<std::size_t>(y);
+    const auto uz = static_cast<std::size_t>(z);
+    return (uz * resolution_.y() + uy) * resolution_.x() + ux;
   }
 
   void integrate_voxel(int x, int y, int z,
@@ -205,26 +207,12 @@ class Volume {
                        const image_proc::Image<Eigen::Vector3f>* normals);
 
   void integrate_color(int x, int y, int z, std::uint32_t color,
-                       float observation_weight, float max_weight) {
-    auto& voxel = colors_[index(x, y, z)];
-    const auto rgba = rgba_from_pixel(color);
-    const float blended_weight = voxel.weight + observation_weight;
-    voxel.r = ((voxel.r * voxel.weight) +
-               (static_cast<float>(rgba.x()) * observation_weight)) /
-              blended_weight;
-    voxel.g = ((voxel.g * voxel.weight) +
-               (static_cast<float>(rgba.y()) * observation_weight)) /
-              blended_weight;
-    voxel.b = ((voxel.b * voxel.weight) +
-               (static_cast<float>(rgba.z()) * observation_weight)) /
-              blended_weight;
-    voxel.weight = std::min(blended_weight, max_weight);
-  }
+                       float observation_weight, float max_weight);
 
   [[nodiscard]] bool sample_tsdf(const Eigen::Vector3f& point,
                                  float& distance) const;
 
-  [[nodiscard]] bool sample_tsdf_relaxed(const Eigen::Vector3f& point,
+  [[nodiscard]] bool sample_tsdf_valid_corners(const Eigen::Vector3f& point,
                                                   float& distance) const;
 
   [[nodiscard]] GridSamplePosition grid_sample_position(
@@ -237,11 +225,9 @@ class Volume {
   [[nodiscard]] bool strict_tsdf_corner(int x, int y, int z,
                                         float& distance) const;
 
-  [[nodiscard]] float relaxed_tsdf_corner(int x, int y, int z) const;
-
   [[nodiscard]] bool sample_normal(const Eigen::Vector3f& point,
                                    Eigen::Vector3f& normal,
-                                   bool missing_tsdf_as_zero) const;
+                                   bool tsdf_from_valid_corners) const;
 
   [[nodiscard]] ColorRgba sample_color(const Eigen::Vector3f& point) const;
 

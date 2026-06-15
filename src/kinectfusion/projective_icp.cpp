@@ -1,82 +1,17 @@
 #include <kinectfusion/projective_icp.hpp>
 
-#include <algorithm>
-#include <array>
 #include <cmath>
-#include <utility>
 #include <stdexcept>
+#include <utility>
 
-// Disable false warnings about Ceres in GCC
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic ignored "-Warray-bounds"
-#pragma GCC diagnostic ignored "-Wstringop-overread"
-#pragma GCC diagnostic ignored "-Wstringop-overflow"
-#endif
-
-#include <ceres/ceres.h>
-#include <ceres/rotation.h>
+#include <Eigen/Geometry>
 
 namespace kinectfusion {
 namespace {
 
-struct PointToPlaneConstraint {
-  PointToPlaneConstraint(Eigen::Vector3f source, Eigen::Vector3f target,
-                         Eigen::Vector3f normal)
-      : source_(std::move(source)),
-        target_(std::move(target)),
-        normal_(std::move(normal)) {}
-
-  template <typename T>
-  bool operator()(const T* const pose, T* residual) const {
-    // pose[0..2] is the angle-axis rotation, pose[3..5] the translation.
-    const T* rotation = pose;
-    const T* translation = pose + 3;
-    const T source[3] = {T(source_.x()), T(source_.y()), T(source_.z())};
-    const T target[3] = {T(target_.x()), T(target_.y()), T(target_.z())};
-    const T normal[3] = {T(normal_.x()), T(normal_.y()), T(normal_.z())};
-
-    T transformed[3];
-    ceres::AngleAxisRotatePoint(rotation, source, transformed);
-    transformed[0] += translation[0];
-    transformed[1] += translation[1];
-    transformed[2] += translation[2];
-
-    residual[0] = (normal[0] * (transformed[0] - target[0])) +
-                  (normal[1] * (transformed[1] - target[1])) +
-                  (normal[2] * (transformed[2] - target[2]));
-    return true;
-  }
-
-  static ceres::CostFunction* create(const Eigen::Vector3f& source,
-                                     const Eigen::Vector3f& target,
-                                     const Eigen::Vector3f& normal) {
-    return new ceres::AutoDiffCostFunction<PointToPlaneConstraint, 1, 6>(
-        new PointToPlaneConstraint(source, target, normal));
-  }
-
-  Eigen::Vector3f source_;
-  Eigen::Vector3f target_;
-  Eigen::Vector3f normal_;
-};
-
-
-[[nodiscard]] Eigen::Matrix4f increment_to_matrix(
-    const std::array<double, 6>& pose) {
-  std::array<double, 9> rotation{};
-  ceres::AngleAxisToRotationMatrix(pose.data(), rotation.data());
-
-  return make_transform_matrix(
-      Eigen::Map<const Eigen::Matrix3d>(rotation.data()).cast<float>(),
-      Eigen::Map<const Eigen::Vector3d>(pose.data() + 3).cast<float>());
-}
-
 void validate_options(const ProjectiveIcpOptions& options) {
   if (options.iterations == 0) {
     throw std::invalid_argument("Projective ICP must run at least one iteration");
-  }
-  if (options.solver_iterations == 0) {
-    throw std::invalid_argument(
-        "Projective ICP solver must run at least one iteration");
   }
   if (options.max_point_distance <= 0.0F) {
     throw std::invalid_argument("Projective ICP max distance must be positive");
@@ -137,18 +72,19 @@ ProjectiveIcpResult ProjectiveIcpTracker::estimate_pose(
 
   Eigen::Matrix4f pose = initial_camera_to_world;
   const Eigen::Matrix4f model_world_to_camera = model_camera_to_world.inverse();
+  bool system_stable = false;
   for (unsigned int iteration = 0; iteration < options_.iterations;
        ++iteration) {
     const auto correspondences = find_correspondences(
         live_maps, model_maps, model_intrinsics, model_world_to_camera, pose);
-    result.correspondences = correspondences.matches.size();
-    if (!correspondences.matches.empty()) {
+    result.correspondences = correspondences.count;
+    if (correspondences.count > 0) {
       result.mean_point_distance =
           correspondences.distance_sum /
-          static_cast<float>(correspondences.matches.size());
+          static_cast<float>(correspondences.count);
     }
 
-    if (correspondences.matches.size() < options_.min_correspondences) {
+    if (correspondences.count < options_.min_correspondences) {
       result.pose = pose;
       result.status = ProjectiveIcpStatus::too_few_correspondences;
       return result;
@@ -157,6 +93,7 @@ ProjectiveIcpResult ProjectiveIcpTracker::estimate_pose(
     const auto stability = check_system_stability(correspondences);
     result.min_system_eigenvalue = stability.min_eigenvalue;
     result.condition_number = stability.condition_number;
+    system_stable = stability.stable;
     if (!stability.stable) {
       result.pose = pose;
       result.status = ProjectiveIcpStatus::unconstrained_system;
@@ -188,9 +125,15 @@ ProjectiveIcpResult ProjectiveIcpTracker::estimate_pose(
   }
 
   result.pose = pose;
-  result.converged = result.correspondences >= options_.min_correspondences;
-  result.status = result.converged ? ProjectiveIcpStatus::converged
-                                   : ProjectiveIcpStatus::too_few_correspondences;
+  result.converged =
+      system_stable && result.correspondences >= options_.min_correspondences;
+  if (result.converged) {
+    result.status = ProjectiveIcpStatus::converged;
+  } else if (result.correspondences < options_.min_correspondences) {
+    result.status = ProjectiveIcpStatus::too_few_correspondences;
+  } else {
+    result.status = ProjectiveIcpStatus::unconstrained_system;
+  }
   return result;
 }
 
@@ -260,12 +203,11 @@ ProjectiveIcpTracker::CorrespondenceSet ProjectiveIcpTracker::find_correspondenc
       Eigen::Matrix<float, 6, 1> row;
       row.head<3>() = source.cross(model_normal);
       row.tail<3>() = model_normal;
+      const float point_plane_residual = model_normal.dot(model_vertex - source);
       correspondences.normal_matrix += row * row.transpose();
+      correspondences.normal_rhs += row * point_plane_residual;
       correspondences.distance_sum += distance;
-      correspondences.matches.push_back(
-          Correspondence{.source = source,
-                         .target = model_vertex,
-                         .normal = model_normal});
+      ++correspondences.count;
     }
   }
 
@@ -274,7 +216,7 @@ ProjectiveIcpTracker::CorrespondenceSet ProjectiveIcpTracker::find_correspondenc
 
 ProjectiveIcpTracker::SystemStability ProjectiveIcpTracker::check_system_stability(
     const CorrespondenceSet& correspondences) const {
-  if (correspondences.matches.size() < options_.min_correspondences) {
+  if (correspondences.count < options_.min_correspondences) {
     return {};
   }
 
@@ -303,42 +245,30 @@ ProjectiveIcpTracker::SystemStability ProjectiveIcpTracker::check_system_stabili
 ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
     const CorrespondenceSet& correspondences) const {
   Increment increment;
-  if (correspondences.matches.size() < options_.min_correspondences) {
+  if (correspondences.count < options_.min_correspondences) {
     return increment;
   }
 
-
-  std::array<double, 6> pose{};
-  ceres::Problem problem;
-  for (const auto& match : correspondences.matches) {
-    problem.AddResidualBlock(
-        PointToPlaneConstraint::create(match.source, match.target, match.normal),
-        nullptr, pose.data());
-  }
-
-  ceres::Solver::Options solver_options;
-  solver_options.linear_solver_type = ceres::DENSE_QR;
-  solver_options.max_num_iterations =
-      static_cast<int>(options_.solver_iterations);
-  solver_options.minimizer_progress_to_stdout = false;
-  solver_options.logging_type = ceres::SILENT;
-
-  ceres::Solver::Summary summary;
-  ceres::Solve(solver_options, &problem, &summary);
-  if (summary.termination_type == ceres::FAILURE ||
-      summary.termination_type == ceres::USER_FAILURE) {
+  // Single Gauss-Newton step of the linearized point-to-plane system
+  // (paper eqns 24-26). The outer ICP loop re-linearizes by re-projecting
+  // correspondences each iteration, so one Cholesky solve per call suffices.
+  const Eigen::Matrix<float, 6, 1> solution =
+      correspondences.normal_matrix.ldlt().solve(correspondences.normal_rhs);
+  if (!solution.allFinite()) {
     return increment;
   }
 
-  const Eigen::Vector3d angle_axis{pose[0], pose[1], pose[2]};
-  const Eigen::Vector3d translation{pose[3], pose[4], pose[5]};
-  if (!angle_axis.allFinite() || !translation.allFinite()) {
-    return increment;
+  const Eigen::Vector3f angle_axis = solution.head<3>();
+  const Eigen::Vector3f translation = solution.tail<3>();
+  const float angle = angle_axis.norm();
+  Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
+  if (angle > 1.0e-12F) {
+    rotation = Eigen::AngleAxisf(angle, angle_axis / angle).toRotationMatrix();
   }
 
-  increment.transform = increment_to_matrix(pose);
-  increment.update_rotation = static_cast<float>(angle_axis.norm());
-  increment.update_translation = static_cast<float>(translation.norm());
+  increment.transform = make_transform_matrix(rotation, translation);
+  increment.update_rotation = angle;
+  increment.update_translation = translation.norm();
   increment.solved = true;
   return increment;
 }

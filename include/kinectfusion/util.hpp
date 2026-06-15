@@ -14,10 +14,10 @@ using ColorRgba = Eigen::Vector<std::uint8_t, 4>;
 inline constexpr float kTumDepthScale = 5000.0F;
 
 struct CameraIntrinsics {
-  float fx{525.0F};
-  float fy{525.0F};
-  float cx{319.5F};
-  float cy{239.5F};
+  float fx{};
+  float fy{};
+  float cx{};
+  float cy{};
 
   [[nodiscard]] Eigen::Matrix3f matrix() const {
     Eigen::Matrix3f intrinsics = Eigen::Matrix3f::Identity();

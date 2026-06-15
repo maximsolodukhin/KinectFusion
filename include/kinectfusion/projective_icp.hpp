@@ -11,7 +11,6 @@ namespace kinectfusion {
 
 struct ProjectiveIcpOptions {
   unsigned int iterations{10};
-  unsigned int solver_iterations{4};
   std::size_t min_correspondences{64};
   float max_point_distance{0.05F};
   float min_normal_dot{0.8F};
@@ -60,20 +59,16 @@ class ProjectiveIcpTracker {
       Eigen::Matrix4f initial_camera_to_world) const;
 
  private:
-  // One accepted projective correspondence, expressed in world space. source is
-  // the live vertex after the current pose estimate, target/normal come from the
-  // model surface. Ceres optimises a 6-DOF increment on top of source.
-  struct Correspondence {
-    Eigen::Vector3f source{Eigen::Vector3f::Zero()};
-    Eigen::Vector3f target{Eigen::Vector3f::Zero()};
-    Eigen::Vector3f normal{Eigen::Vector3f::Zero()};
-  };
-
+  // Accumulated linearized point-to-plane normal equations for one ICP
+  // iteration. Each accepted projective correspondence contributes a row
+  // a = [source x n; n] (source = live vertex after the current pose estimate,
+  // n = model normal) with right-hand side a * (n . (target - source)). The
+  // 6x6 normal_matrix is solved directly for the increment and reused for the
+  // degeneracy / conditioning check.
   struct CorrespondenceSet {
-    std::vector<Correspondence> matches;
-    // Gauss-Newton normal matrix of the point-to-plane terms, kept for the
-    // degeneracy check; Ceres performs the actual nonlinear solve.
+    std::size_t count{};
     Eigen::Matrix<float, 6, 6> normal_matrix{Eigen::Matrix<float, 6, 6>::Zero()};
+    Eigen::Matrix<float, 6, 1> normal_rhs{Eigen::Matrix<float, 6, 1>::Zero()};
     float distance_sum{};
   };
 

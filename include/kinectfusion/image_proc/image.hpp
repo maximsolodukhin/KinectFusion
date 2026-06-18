@@ -1,6 +1,8 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 
+#include <Eigen/Core>
+
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -13,27 +15,29 @@ class Image {
   using value_type = PixelT;
 
   Image() = default;
-  Image(unsigned int width, unsigned int height)
+  Image(std::size_t width, std::size_t height)
       : width_(width), height_(height) {
-    data_.resize(std::size_t{width} * height);
+    data_.resize(width * height);
   }
+  Image(std::size_t width, std::size_t height, const PixelT& init)
+      : width_(width), height_(height), data_(width * height, init) {}
 
-  [[nodiscard]] const PixelT& at(unsigned int x, unsigned int y) const {
+  [[nodiscard]] const PixelT& at(std::size_t x, std::size_t y) const {
     return data_[(y * width_) + x];
   }
-  [[nodiscard]] PixelT& at(unsigned int x, unsigned int y) {
+  [[nodiscard]] PixelT& at(std::size_t x, std::size_t y) {
     return data_[(y * width_) + x];
   }
 
-  [[nodiscard]] unsigned int width() const { return width_; }
-  [[nodiscard]] unsigned int height() const { return height_; }
+  [[nodiscard]] std::size_t width() const { return width_; }
+  [[nodiscard]] std::size_t height() const { return height_; }
 
   [[nodiscard]] std::vector<PixelT>& data() { return data_; }
   [[nodiscard]] const std::vector<PixelT>& data() const { return data_; }
 
  private:
-  unsigned int width_{};
-  unsigned int height_{};
+  std::size_t width_{};
+  std::size_t height_{};
   std::vector<PixelT> data_;
 };
 
@@ -46,6 +50,8 @@ class ColorImage final : public Image<std::uint32_t> {
  public:
   using Image<std::uint32_t>::Image;
 };
+
+using Vector3fImage = Image<Eigen::Vector3f>;
 
 }  // namespace kinectfusion::image_proc
 

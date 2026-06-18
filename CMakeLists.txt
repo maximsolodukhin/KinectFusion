@@ -71,7 +71,7 @@ if(MSVC)
 endif()
 
 # set the startup project for the "play" button in MSVC
-set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT intro)
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT kinectfusion_app)
 
 if(CMAKE_SKIP_INSTALL_RULES)
   return()
@@ -81,7 +81,7 @@ endif()
 # we know we want to ship
 # kinectfusion_package_project(
 #   TARGETS
-#   intro
+#   kinectfusion_app
 #   kinectfusion_options
 #   kinectfusion_warnings
 #   # FIXME: this does not work! CK

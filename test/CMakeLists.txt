@@ -9,7 +9,7 @@ project(CmakeConfigPackageTests
 if(PROJECT_IS_TOP_LEVEL OR TEST_INSTALLED_VERSION)
   enable_testing()
 
-  find_package(kinectfusion CONFIG REQUIRED) # for intro, project_options, ...
+  find_package(kinectfusion CONFIG REQUIRED) # for kinectfusion_app, project_options, ...
 
   if(NOT TARGET kinectfusion_options)
     message(FATAL_ERROR "Required config package not found!")
@@ -27,7 +27,7 @@ elseif(DEFINED Catch2_SOURCE_DIR)
 endif()
 include(Catch)
 # Provide a simple smoke test to make sure that the CLI works and can display a --help message
-add_test(NAME cli.has_help COMMAND $<TARGET_FILE:intro> --help)
+add_test(NAME cli.has_help COMMAND $<TARGET_FILE:kinectfusion_app> --help)
 # CMake-script regression tests for cmake/Sanitizers.cmake (issue #141).
 add_test(
   NAME cmake.sanitizers.apple_excludes_leak
@@ -42,7 +42,7 @@ add_test(
 # matches the version given to CMake. This will be important once you package
 # your program. Real world shows that this is the kind of simple mistake that is easy
 # to make, but also easy to test for.
-add_test(NAME cli.version_matches COMMAND $<TARGET_FILE:intro> --version)
+add_test(NAME cli.version_matches COMMAND $<TARGET_FILE:kinectfusion_app> --version)
 set_tests_properties(cli.version_matches PROPERTIES PASS_REGULAR_EXPRESSION "${kinectfusion_VERSION}")
 
 add_executable(tests tests.cpp)
@@ -50,6 +50,7 @@ target_link_libraries(
   tests
   PRIVATE kinectfusion::kinectfusion_warnings
           kinectfusion::kinectfusion_options
+          kinectfusion::kinectfusion
           kinectfusion::sample_library
           Catch2::Catch2WithMain)
 

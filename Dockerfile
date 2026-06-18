@@ -5,7 +5,7 @@
 #               cppcheck, ccache). No project source. Bind-mount the project
 #               at run time.
 #               Build with: `docker build --target dev -t kinectfusion-dev .`
-#   runtime   - Minimal Ubuntu with the stripped release `intro` binary and
+#   runtime   - Minimal Ubuntu with the stripped release `kinectfusion` binary and
 #               its runtime libraries.
 #               Build with: `docker build -t kinectfusion .`
 FROM ubuntu:24.04 AS dev
@@ -82,8 +82,8 @@ RUN cmake -S . -B build \
         -DKINECTFUSION_ENABLE_CPPCHECK=OFF \
         -DKINECTFUSION_ENABLE_SANITIZER_ADDRESS=OFF \
         -DKINECTFUSION_ENABLE_SANITIZER_UNDEFINED=OFF \
-    && cmake --build build --target intro -j"$(nproc)" \
-    && strip --strip-unneeded build/src/app/intro
+    && cmake --build build --target kinectfusion_app -j"$(nproc)" \
+    && strip --strip-unneeded build/src/app/kinectfusion
 
 FROM ubuntu:24.04 AS runtime
 
@@ -98,7 +98,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app
 
-COPY --from=1 /workspace/build/src/app/intro /usr/local/bin/kinectfusion
+COPY --from=1 /workspace/build/src/app/kinectfusion /usr/local/bin/kinectfusion
 
 USER app
 WORKDIR /home/app

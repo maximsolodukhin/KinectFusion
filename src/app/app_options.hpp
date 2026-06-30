@@ -50,7 +50,7 @@ struct AppOptions {
 
   // Origin of the TSDF volume in world space, derived from its extent and the
   // requested margin behind the initial camera.
-  [[nodiscard]] Eigen::Vector3f volume_origin() const;
+  [[nodiscard]] kinectfusion::Vec3f volume_origin() const;
 
   [[nodiscard]] kinectfusion::RaycastOptions raycast_options(
       const kinectfusion::VirtualSensor& sensor,

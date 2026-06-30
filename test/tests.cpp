@@ -17,7 +17,8 @@ namespace {
   const auto& points = maps.points.data();
   const auto& normals = maps.normals.data();
   for (std::size_t i = 0; i < points.size(); ++i) {
-    if (points.at(i).allFinite() && normals.at(i).allFinite()) {
+    if (kinectfusion::all_finite(points.at(i)) &&
+        kinectfusion::all_finite(normals.at(i))) {
       ++count;
     }
   }
@@ -49,21 +50,24 @@ struct SyntheticSurface {
                 .colors = kinectfusion::image_proc::ColorImage{width, height}}};
 
   const std::array normal_seeds{
-      Eigen::Vector3f{1.0F, 0.0F, 0.0F},  Eigen::Vector3f{0.0F, 1.0F, 0.0F},
-      Eigen::Vector3f{0.0F, 0.0F, 1.0F},  Eigen::Vector3f{1.0F, 1.0F, 0.0F},
-      Eigen::Vector3f{1.0F, 0.0F, 1.0F},  Eigen::Vector3f{0.0F, 1.0F, 1.0F},
-      Eigen::Vector3f{1.0F, -1.0F, 0.5F}, Eigen::Vector3f{-1.0F, 0.5F, 1.0F},
-      Eigen::Vector3f{0.5F, 1.0F, -1.0F}};
+      kinectfusion::Vec3f{.x = 1.0F, .y = 0.0F, .z = 0.0F},
+      kinectfusion::Vec3f{.x = 0.0F, .y = 1.0F, .z = 0.0F},
+      kinectfusion::Vec3f{.x = 0.0F, .y = 0.0F, .z = 1.0F},
+      kinectfusion::Vec3f{.x = 1.0F, .y = 1.0F, .z = 0.0F},
+      kinectfusion::Vec3f{.x = 1.0F, .y = 0.0F, .z = 1.0F},
+      kinectfusion::Vec3f{.x = 0.0F, .y = 1.0F, .z = 1.0F},
+      kinectfusion::Vec3f{.x = 1.0F, .y = -1.0F, .z = 0.5F},
+      kinectfusion::Vec3f{.x = -1.0F, .y = 0.5F, .z = 1.0F},
+      kinectfusion::Vec3f{.x = 0.5F, .y = 1.0F, .z = -1.0F}};
   for (unsigned int y = 0; y < height; ++y) {
     for (unsigned int x = 0; x < width; ++x) {
       const float z = 1.0F + (0.05F * static_cast<float>(x + y));
-      const auto point = intrinsics.back_project({static_cast<float>(x),
-                                                 static_cast<float>(y)}, z);
+      const auto point = kinectfusion::from_eigen(intrinsics.back_project(
+          {static_cast<float>(x), static_cast<float>(y)}, z));
       const auto seed_index =
           (static_cast<std::size_t>(y) * static_cast<std::size_t>(width)) +
           static_cast<std::size_t>(x);
-      auto normal = normal_seeds.at(seed_index);
-      normal.normalize();
+      const auto normal = kinectfusion::normalized(normal_seeds.at(seed_index));
 
       surface.live.vertices.at(x, y) = point;
       surface.live.normals.at(x, y) = normal;
@@ -97,18 +101,18 @@ TEST_CASE("Depth processing back-projects a flat depth image",
   const auto center = vertices.at(1, 1);
   const auto right = vertices.at(2, 1);
 
-  REQUIRE(center.x() == Catch::Approx(0.0F));
-  REQUIRE(center.y() == Catch::Approx(0.0F));
-  REQUIRE(center.z() == Catch::Approx(1.0F));
-  REQUIRE(right.x() == Catch::Approx(1.0F));
-  REQUIRE(right.y() == Catch::Approx(0.0F));
-  REQUIRE(right.z() == Catch::Approx(1.0F));
+  REQUIRE(center.x == Catch::Approx(0.0F));
+  REQUIRE(center.y == Catch::Approx(0.0F));
+  REQUIRE(center.z == Catch::Approx(1.0F));
+  REQUIRE(right.x == Catch::Approx(1.0F));
+  REQUIRE(right.y == Catch::Approx(0.0F));
+  REQUIRE(right.z == Catch::Approx(1.0F));
 
   const auto normals =
       kinectfusion::compute_normals_central_differences(vertices);
-  REQUIRE(normals.at(1, 1).x() == Catch::Approx(0.0F));
-  REQUIRE(normals.at(1, 1).y() == Catch::Approx(0.0F));
-  REQUIRE(normals.at(1, 1).z() == Catch::Approx(-1.0F));
+  REQUIRE(normals.at(1, 1).x == Catch::Approx(0.0F));
+  REQUIRE(normals.at(1, 1).y == Catch::Approx(0.0F));
+  REQUIRE(normals.at(1, 1).z == Catch::Approx(-1.0F));
 }
 
 TEST_CASE("Depth pyramid rejects mixed-depth neighborhoods",

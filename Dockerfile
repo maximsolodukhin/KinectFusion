@@ -21,10 +21,12 @@ RUN set -eux; \
         git \
         build-essential \
         gdb \
+        clangd \
         clang-tidy \
         clang-format \
         cppcheck \
         ccache \
+        zlib1g-dev \
         libasan8 \
         libubsan1; \
     wget -qO- https://apt.kitware.com/keys/kitware-archive-latest.asc \

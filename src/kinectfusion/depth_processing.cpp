@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -14,6 +13,9 @@ namespace {
 // Linear resolution reduction per pyramid level: each level halves width and
 // height, downsampling over a downsample_factor x downsample_factor block.
 constexpr std::size_t downsample_factor = 2U;
+
+constexpr std::uint16_t maximum_depth_value = 0xFFFFU;
+constexpr std::uint16_t minimum_depth_value = 0U;
 
 // A raw depth sample is usable for filtering/back-projection when it is
 // non-zero and falls inside the configured metric depth range.
@@ -61,8 +63,8 @@ std::optional<std::uint16_t> downsample_depth_block(
     const DepthProcessingOptions& options) {
   std::uint32_t sum = 0;
   unsigned int count = 0;
-  std::uint16_t minimum = 0xFFFFU;
-  std::uint16_t maximum = 0;
+  std::uint16_t minimum_observed_depth = maximum_depth_value;
+  std::uint16_t maximum_observed_depth = minimum_depth_value;
 
   for (std::size_t dy = 0; dy < downsample_factor; ++dy) {
     for (std::size_t dx = 0; dx < downsample_factor; ++dx) {
@@ -73,16 +75,16 @@ std::optional<std::uint16_t> downsample_depth_block(
       }
       sum += sample;
       ++count;
-      minimum = std::min(minimum, sample);
-      maximum = std::max(maximum, sample);
+      minimum_observed_depth = std::min(minimum_observed_depth, sample);
+      maximum_observed_depth = std::max(maximum_observed_depth, sample);
     }
   }
 
   if (count == 0) {
     return std::nullopt;
   }
-  if (depth_to_meters(maximum, options.depth_scale) -
-          depth_to_meters(minimum, options.depth_scale) >
+  if (depth_to_meters(maximum_observed_depth, options.depth_scale) -
+          depth_to_meters(minimum_observed_depth, options.depth_scale) >
       options.max_downsample_depth_jump) {
     return std::nullopt;
   }
@@ -96,32 +98,31 @@ image_proc::Vector3fImage compute_normals_central_differences(
     const image_proc::Vector3fImage& vertices,
     const DepthProcessingOptions& options) {
   validate_options(options);
-  const float nan = std::numeric_limits<float>::quiet_NaN();
   image_proc::Vector3fImage normals{
-      vertices.width(), vertices.height(), Eigen::Vector3f::Constant(nan)};
+      vertices.width(), vertices.height(), invalid_vector()};
   if (vertices.width() < 3U || vertices.height() < 3U) {
     return normals;
   }
   for (unsigned int row = 1U; row + 1U < vertices.height(); ++row) {
     for (unsigned int col = 1U; col + 1U < vertices.width(); ++col) {
-      const Eigen::Vector3f& center = vertices.at(col, row);
-      const Eigen::Vector3f& left = vertices.at(col - 1U, row);
-      const Eigen::Vector3f& right = vertices.at(col + 1U, row);
-      const Eigen::Vector3f& top = vertices.at(col, row - 1U);
-      const Eigen::Vector3f& bottom = vertices.at(col, row + 1U);
-      if (!center.allFinite() || !left.allFinite() || !right.allFinite() ||
-          !top.allFinite() || !bottom.allFinite()) {
+      const Vec3f& center = vertices.at(col, row);
+      const Vec3f& left = vertices.at(col - 1U, row);
+      const Vec3f& right = vertices.at(col + 1U, row);
+      const Vec3f& top = vertices.at(col, row - 1U);
+      const Vec3f& bottom = vertices.at(col, row + 1U);
+      if (!all_finite(center) || !all_finite(left) || !all_finite(right) ||
+          !all_finite(top) || !all_finite(bottom)) {
         continue;
       }
 
-      if (std::abs(right.z() - left.z()) > options.max_normal_depth_jump ||
-          std::abs(bottom.z() - top.z()) > options.max_normal_depth_jump) {
+      if (std::abs(right.z - left.z) > options.max_normal_depth_jump ||
+          std::abs(bottom.z - top.z) > options.max_normal_depth_jump) {
         continue;
       }
-      const Eigen::Vector3f normal = (bottom - top).cross(right - left);
-      const float norm = normal.norm();
-      if (norm > 0.0F) {
-        normals.at(col, row) = normal / norm;
+      const Vec3f normal = cross(bottom - top, right - left);
+      const float normal_length = norm(normal);
+      if (normal_length > 0.0F) {
+        normals.at(col, row) = normal / normal_length;
       }
     }
   }
@@ -176,7 +177,7 @@ image_proc::DepthImage bilateral_filter_depth(
             continue;
           }
           const float depth_difference = sample_meters - center_meters;
-          const float spatial = static_cast<float>(dx * dx + dy * dy);
+          const auto spatial = static_cast<float>(dx * dx + dy * dy);
           const float weight =
               std::exp(spatial * spatial_scale +
                        depth_difference * depth_difference * depth_weight_scale);
@@ -219,10 +220,8 @@ image_proc::Vector3fImage project_depth_to_vertices(
     const Eigen::Matrix4f& camera_pose,
     const DepthProcessingOptions& options) {
   validate_options(options);
-  const float nan = std::numeric_limits<float>::quiet_NaN();
   image_proc::Vector3fImage vertices{
-      depth_image.width(), depth_image.height(),
-      Eigen::Vector3f::Constant(nan)};
+      depth_image.width(), depth_image.height(), invalid_vector()};
   for (std::size_t row = 0; row < depth_image.height(); ++row) {
     for (std::size_t col = 0; col < depth_image.width(); ++col) {
       const auto raw = depth_image.at(col, row);
@@ -233,8 +232,9 @@ image_proc::Vector3fImage project_depth_to_vertices(
       const Eigen::Vector3f camera_point = intrinsics.back_project(
           {static_cast<float>(col), static_cast<float>(row)}, depth);
       // .homogeneous() makes the camera_point (x,y,z,1) to multiply with the camera pose
-      vertices.at(col, row) =
+      const Eigen::Vector3f world_point =
           (camera_pose * camera_point.homogeneous()).head<3>();
+      vertices.at(col, row) = from_eigen(world_point);
     }
   }
   return vertices;

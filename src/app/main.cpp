@@ -1,4 +1,5 @@
 #include <CLI/CLI.hpp>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <cstdlib>
@@ -16,6 +17,14 @@
 #include "frame_output.hpp"
 
 namespace {
+
+void configure_logging() {
+  auto logger = spdlog::stdout_color_mt("kinectfusion");
+  logger->set_pattern("[%H:%M:%S] [%^%l%$] %v");
+  spdlog::set_default_logger(logger);
+  spdlog::set_level(spdlog::level::info);
+  spdlog::flush_on(spdlog::level::info);
+}
 
 // Raycasts the model at a given pyramid level (level 0 is full resolution).
 [[nodiscard]] kinectfusion::SurfaceMaps raycast_level(
@@ -48,6 +57,8 @@ namespace {
 
 int main(int argc, const char** argv) {
   try {
+    configure_logging();
+
     app::AppOptions app_options;
 
     CLI::App app{"CPU KinectFusion reconstruction"};
@@ -57,8 +68,16 @@ int main(int argc, const char** argv) {
 
     app::validate_options(app_options);
 
+    spdlog::info(
+        "Starting KinectFusion: dataset={} max_frames={} volume={}^3 "
+        "voxel_size={} truncation_distance={}",
+        app_options.dataset_dir.string(), app_options.max_frames,
+        app_options.volume_resolution, app_options.voxel_size,
+        app_options.truncation_distance);
+
     // load first frame to sensor
     kinectfusion::VirtualSensor sensor;
+    spdlog::info("Opening dataset: {}", app_options.dataset_dir.string());
     if (!sensor.init(app_options.dataset_dir)) {
       spdlog::error("Failed to initialize dataset: {}",
                     app_options.dataset_dir.string());
@@ -84,20 +103,32 @@ int main(int argc, const char** argv) {
     // camera position and direction
     Eigen::Matrix4f camera_to_world = Eigen::Matrix4f::Identity();
 
+    spdlog::info("Loading initial frame");
     if (!sensor.process_next_frame()) {
       spdlog::error("Dataset contains no frames");
       return EXIT_FAILURE;
     }
+    spdlog::info("Frame {} loaded: depth={}x{} color={}x{}",
+                 sensor.current_frame_index(), sensor.depth_image().width(),
+                 sensor.depth_image().height(), sensor.color_image().width(),
+                 sensor.color_image().height());
 
     // build pyramids
+    spdlog::info("Frame {}: building surface pyramid (requested levels={})",
+                 sensor.current_frame_index(), depth_options.levels);
     const auto initial_pyramid = kinectfusion::build_surface_pyramid(
         sensor.depth_image(), sensor.depth_intrinsics(),
         Eigen::Matrix4f::Identity(), depth_options);
+    spdlog::info("Frame {}: built {} pyramid level(s)",
+                 sensor.current_frame_index(), initial_pyramid.size());
     const auto* initial_normals =
         initial_pyramid.empty() ? nullptr
                                 : &initial_pyramid.front().maps.normals;
 
     // integrate first frame into volume
+    spdlog::info(
+        "Frame {}: integrating first depth frame into TSDF volume ({}^3 voxels)",
+        sensor.current_frame_index(), app_options.volume_resolution);
     volume.integrate_depth_image(sensor.depth_image(),
                                  sensor.depth_intrinsics(),
                                  camera_to_world.inverse(),
@@ -105,8 +136,12 @@ int main(int argc, const char** argv) {
                                  &sensor.color_image(), initial_normals);
 
     // raycast volume and get model surface maps
+    spdlog::info("Frame {}: raycasting initialized model",
+                 sensor.current_frame_index());
     auto model_maps = raycast_level(volume, sensor, camera_to_world,
                                     app_options, 0);
+    spdlog::info("Frame {}: writing outputs to {}",
+                 sensor.current_frame_index(), app_options.output_dir.string());
     write_outputs(app_options, model_maps, 0);
 
     spdlog::info("Initialized reconstruction from frame 0: observed voxels={}",
@@ -119,11 +154,18 @@ int main(int argc, const char** argv) {
     while (app_options.max_frames < 0 ||
            processed_frames < app_options.max_frames) {
       // load frame
+      spdlog::info("Loading next frame");
       if (!sensor.process_next_frame()) {
         break;
       }
+      spdlog::info("Frame {} loaded: depth={}x{} color={}x{}",
+                   sensor.current_frame_index(), sensor.depth_image().width(),
+                   sensor.depth_image().height(), sensor.color_image().width(),
+                   sensor.color_image().height());
 
       // build pyramid
+      spdlog::info("Frame {}: building live surface pyramid",
+                   sensor.current_frame_index());
       const auto live_pyramid = kinectfusion::build_surface_pyramid(
           sensor.depth_image(), sensor.depth_intrinsics(),
           Eigen::Matrix4f::Identity(), depth_options);
@@ -132,6 +174,8 @@ int main(int argc, const char** argv) {
                      sensor.current_frame_index());
         continue;
       }
+      spdlog::info("Frame {}: built {} live pyramid level(s)",
+                   sensor.current_frame_index(), live_pyramid.size());
 
       kinectfusion::IcpOutcome tracking;
       tracking.pose = camera_to_world;
@@ -140,15 +184,29 @@ int main(int argc, const char** argv) {
       auto tracked_pose = camera_to_world;
 
       // for each level: raycast at current pose, run icp -> new tracked pose
+      spdlog::info("Frame {}: tracking pose with projective ICP",
+                   sensor.current_frame_index());
       for (std::size_t level_index = live_pyramid.size(); level_index-- > 0;) {
         const auto level = static_cast<unsigned int>(level_index);
+        spdlog::info("Frame {} level {}: raycasting model prediction",
+                     sensor.current_frame_index(), level);
         const auto level_model_maps =
             raycast_level(volume, sensor, tracked_pose, app_options, level);
         const auto level_intrinsics = sensor.depth_intrinsics().scaled(level);
+        spdlog::info("Frame {} level {}: running ICP (iterations={})",
+                     sensor.current_frame_index(), level,
+                     app_options.icp_iterations_for_level(level));
         tracking = tracker.estimate_pose(
             app_options.icp_iterations_for_level(level),
             live_pyramid.at(level_index).maps, level_model_maps,
             level_intrinsics, tracked_pose, tracked_pose);
+        spdlog::info(
+            "Frame {} level {}: ICP result={} correspondences={} "
+            "mean_distance={}",
+            sensor.current_frame_index(), level,
+            tracking.result ? "accepted" : "rejected",
+            tracking.diagnostics.correspondences,
+            tracking.diagnostics.mean_point_distance);
         tracked_pose = tracking.pose;
         if (!tracking.result) {
           break;
@@ -162,6 +220,8 @@ int main(int argc, const char** argv) {
         }
         relocalizing = true;
         ++relocalization_frames;
+        spdlog::info("Frame {}: raycasting last accepted pose for relocalization",
+                     sensor.current_frame_index());
         model_maps = raycast_level(volume, sensor, camera_to_world,
                                    app_options, 0);
         spdlog::warn(
@@ -200,14 +260,21 @@ int main(int argc, const char** argv) {
       camera_to_world = tracked_pose;
 
       // integrate current depth frame into volume using new pose
+      spdlog::info("Frame {}: integrating tracked depth frame into TSDF volume",
+                   sensor.current_frame_index());
       volume.integrate_depth_image(
           sensor.depth_image(), sensor.depth_intrinsics(),
           camera_to_world.inverse(), tsdf_options, &sensor.color_image(),
           &live_pyramid.front().maps.normals);
 
       // raycast volume and get updated surface model maps
+      spdlog::info("Frame {}: raycasting updated model",
+                   sensor.current_frame_index());
       model_maps = raycast_level(volume, sensor, camera_to_world,
                                  app_options, 0);
+      spdlog::info("Frame {}: writing outputs to {}",
+                   sensor.current_frame_index(),
+                   app_options.output_dir.string());
       write_outputs(app_options, model_maps, sensor.current_frame_index());
 
       spdlog::info(

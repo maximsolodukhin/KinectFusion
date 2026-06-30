@@ -1,13 +1,30 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 
-#include <Eigen/Core>
-
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
+#include <kinectfusion/vector.hpp>
+
 namespace kinectfusion::image_proc {
+
+template <typename PixelT>
+struct ImageView {
+  PixelT* data{};
+  std::size_t width{};
+  std::size_t height{};
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE PixelT& at(std::size_t x,
+                                                    std::size_t y) {
+    return data[(y * width) + x];
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const PixelT& at(
+      std::size_t x, std::size_t y) const {
+    return data[(y * width) + x];
+  }
+};
 
 template <typename PixelT>
 class Image {
@@ -32,6 +49,16 @@ class Image {
   [[nodiscard]] std::size_t width() const { return width_; }
   [[nodiscard]] std::size_t height() const { return height_; }
 
+  [[nodiscard]] ImageView<PixelT> view() {
+    return ImageView<PixelT>{
+        .data = data_.data(), .width = width_, .height = height_};
+  }
+
+  [[nodiscard]] ImageView<const PixelT> view() const {
+    return ImageView<const PixelT>{
+        .data = data_.data(), .width = width_, .height = height_};
+  }
+
   [[nodiscard]] std::vector<PixelT>& data() { return data_; }
   [[nodiscard]] const std::vector<PixelT>& data() const { return data_; }
 
@@ -51,7 +78,7 @@ class ColorImage final : public Image<std::uint32_t> {
   using Image<std::uint32_t>::Image;
 };
 
-using Vector3fImage = Image<Eigen::Vector3f>;
+using Vector3fImage = Image<kinectfusion::Vec3f>;
 
 }  // namespace kinectfusion::image_proc
 

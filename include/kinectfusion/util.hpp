@@ -7,9 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 #include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/vector.hpp>
 
 namespace kinectfusion {
 
@@ -38,6 +38,11 @@ struct CameraIntrinsics {
         fy * camera_point.y() / camera_point.z() + cy};
   }
 
+  [[nodiscard]] Eigen::Vector2f project(const Vec3f& camera_point) const {
+    return Eigen::Vector2f{fx * camera_point.x / camera_point.z + cx,
+                           fy * camera_point.y / camera_point.z + cy};
+  }
+
   // Back-projects pixel (x, y) at depth z into a camera-space point.
   [[nodiscard]] Eigen::Vector3f back_project(const Eigen::Vector2f& pixel,
                                              float depth) const {
@@ -56,10 +61,7 @@ struct CameraIntrinsics {
   }
 };
 
-[[nodiscard]] inline Eigen::Vector3f invalid_vector() {
-  const float nan = std::numeric_limits<float>::quiet_NaN();
-  return Eigen::Vector3f{nan, nan, nan};
-}
+[[nodiscard]] inline Vec3f invalid_vector() { return invalid_vec3f(); }
 
 [[nodiscard]] inline Eigen::Matrix4f make_transform_matrix(
     const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {

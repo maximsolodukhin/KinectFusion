@@ -25,7 +25,7 @@ struct Voxel {
 };
 
 struct ColorVoxel {
-  Eigen::Vector3f color{Eigen::Vector3f::Zero()};
+  Vec3f color{};
   float weight{0.0F};
 };
 
@@ -34,6 +34,30 @@ struct SurfaceMaps {
   image_proc::Vector3fImage normals;
   image_proc::ColorImage colors;
 };
+
+struct SurfaceMapsView {
+  image_proc::ImageView<Vec3f> points;
+  image_proc::ImageView<Vec3f> normals;
+  image_proc::ImageView<std::uint32_t> colors;
+};
+
+struct ConstSurfaceMapsView {
+  image_proc::ImageView<const Vec3f> points;
+  image_proc::ImageView<const Vec3f> normals;
+  image_proc::ImageView<const std::uint32_t> colors;
+};
+
+[[nodiscard]] inline SurfaceMapsView view(SurfaceMaps& maps) {
+  return SurfaceMapsView{.points = maps.points.view(),
+                         .normals = maps.normals.view(),
+                         .colors = maps.colors.view()};
+}
+
+[[nodiscard]] inline ConstSurfaceMapsView view(const SurfaceMaps& maps) {
+  return ConstSurfaceMapsView{.points = maps.points.view(),
+                              .normals = maps.normals.view(),
+                              .colors = maps.colors.view()};
+}
 
 struct TsdfIntegrationOptions {
   float depth_scale{5000.0F};
@@ -58,16 +82,69 @@ struct RaycastOptions {
   bool tsdf_from_valid_corners{false};
 };
 
+struct VolumeView {
+  Voxel* voxels{};
+  ColorVoxel* colors{};
+  Size3 resolution{};
+  float voxel_size{};
+  Vec3f origin{};
+  float truncation_distance{};
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
+      std::size_t x, std::size_t y, std::size_t z) const {
+    return (z * resolution.y + y) * resolution.x + x;
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Voxel& voxel_at(
+      std::size_t x, std::size_t y, std::size_t z) {
+    return voxels[index(x, y, z)];
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE ColorVoxel& color_at(
+      std::size_t x, std::size_t y, std::size_t z) {
+    return colors[index(x, y, z)];
+  }
+};
+
+struct ConstVolumeView {
+  const Voxel* voxels{};
+  const ColorVoxel* colors{};
+  Size3 resolution{};
+  float voxel_size{};
+  Vec3f origin{};
+  float truncation_distance{};
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
+      std::size_t x, std::size_t y, std::size_t z) const {
+    return (z * resolution.y + y) * resolution.x + x;
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Voxel& voxel_at(
+      std::size_t x, std::size_t y, std::size_t z) const {
+    return voxels[index(x, y, z)];
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const ColorVoxel& color_at(
+      std::size_t x, std::size_t y, std::size_t z) const {
+    return colors[index(x, y, z)];
+  }
+};
+
 class Volume {
  public:
   Volume(const kinectfusion::Vector3s& resolution, float voxel_size,
-         const Eigen::Vector3f& origin, float truncation_distance)
+         const Vec3f& origin, float truncation_distance)
       : resolution_(resolution),
         voxel_size_(voxel_size),
         origin_(origin),
         truncation_distance_(truncation_distance),
         voxels_(voxel_count()),
         colors_(voxel_count()) {}
+
+  Volume(const kinectfusion::Vector3s& resolution, float voxel_size,
+         const Eigen::Vector3f& origin, float truncation_distance)
+      : Volume(resolution, voxel_size, from_eigen(origin),
+               truncation_distance) {}
 
   [[nodiscard]] kinectfusion::Vector3s resolution() const { return resolution_; }
   [[nodiscard]] float voxel_size() const { return voxel_size_; }
@@ -80,6 +157,28 @@ class Volume {
       }
     }
     return count;
+  }
+
+  [[nodiscard]] VolumeView view() {
+    return VolumeView{.voxels = voxels_.data(),
+                      .colors = colors_.data(),
+                      .resolution = Size3{.x = resolution_.x(),
+                                          .y = resolution_.y(),
+                                          .z = resolution_.z()},
+                      .voxel_size = voxel_size_,
+                      .origin = origin_,
+                      .truncation_distance = truncation_distance_};
+  }
+
+  [[nodiscard]] ConstVolumeView view() const {
+    return ConstVolumeView{.voxels = voxels_.data(),
+                           .colors = colors_.data(),
+                           .resolution = Size3{.x = resolution_.x(),
+                                               .y = resolution_.y(),
+                                               .z = resolution_.z()},
+                           .voxel_size = voxel_size_,
+                           .origin = origin_,
+                           .truncation_distance = truncation_distance_};
   }
 
   // Fuses a depth (and optional color) frame into the volume. world_to_camera
@@ -139,7 +238,7 @@ class Volume {
 
   // Converts to grid coordinates before bounds before checking bounds.
   [[nodiscard]] bool contains(const Eigen::Vector3f& point) const {
-    const Eigen::Vector3f local = (point - origin_) / voxel_size_;
+    const Eigen::Vector3f local = (point - to_eigen(origin_)) / voxel_size_;
     return in_bounds(local.x(), local.y(), local.z());  // Scalar = float, no truncation
   }
 
@@ -180,18 +279,18 @@ class Volume {
                                  bool from_valid_corners) const;
 
   [[nodiscard]] bool sample_color(const Eigen::Vector3f& point,
-                                  Eigen::Vector3f& color) const;
+                                  Vec3f& color) const;
 
   [[nodiscard]] bool sample_normal(const Eigen::Vector3f& point,
                                    Eigen::Vector3f& normal,
                                    bool tsdf_from_valid_corners = false) const;
 
   [[nodiscard]] static std::uint32_t pixel_from_color(
-      const Eigen::Vector3f& color);
+      const Vec3f& color);
 
   kinectfusion::Vector3s resolution_;
   float voxel_size_{};
-  Eigen::Vector3f origin_;
+  Vec3f origin_;
   float truncation_distance_{};
   std::vector<Voxel> voxels_;
   std::vector<ColorVoxel> colors_;

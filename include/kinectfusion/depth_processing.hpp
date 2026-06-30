@@ -29,6 +29,27 @@ struct VertexNormalMaps {
   image_proc::Vector3fImage normals;
 };
 
+struct VertexNormalMapsView {
+  image_proc::ImageView<Vec3f> vertices;
+  image_proc::ImageView<Vec3f> normals;
+};
+
+struct ConstVertexNormalMapsView {
+  image_proc::ImageView<const Vec3f> vertices;
+  image_proc::ImageView<const Vec3f> normals;
+};
+
+[[nodiscard]] inline VertexNormalMapsView view(VertexNormalMaps& maps) {
+  return VertexNormalMapsView{.vertices = maps.vertices.view(),
+                              .normals = maps.normals.view()};
+}
+
+[[nodiscard]] inline ConstVertexNormalMapsView view(
+    const VertexNormalMaps& maps) {
+  return ConstVertexNormalMapsView{.vertices = maps.vertices.view(),
+                                   .normals = maps.normals.view()};
+}
+
 struct DepthProcessingLevel {
   DepthProcessingLevel(image_proc::DepthImage depth,
                        const CameraIntrinsics& camera_intrinsics,

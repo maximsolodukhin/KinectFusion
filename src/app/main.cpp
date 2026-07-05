@@ -5,6 +5,9 @@
 #include <exception>
 #include <iostream>
 #include <kinectfusion/depth_processing.hpp>
+#ifdef KINECTFUSION_CUDA_ENABLED
+#include <kinectfusion/depth_processing.cuh>
+#endif
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
@@ -25,6 +28,22 @@ namespace {
     unsigned int level) {
   return volume.raycast(
       app_options.raycast_options(sensor, camera_to_world, level));
+}
+
+[[nodiscard]] std::vector<kinectfusion::DepthProcessingLevel>
+build_live_pyramid(const kinectfusion::VirtualSensor& sensor,
+                   const app::AppOptions& app_options,
+                   const kinectfusion::DepthProcessingOptions& depth_options) {
+#ifdef KINECTFUSION_CUDA_ENABLED
+  if (app_options.cuda_depth_processing) {
+    return kinectfusion::cuda::build_surface_pyramid(
+        sensor.depth_image(), sensor.depth_intrinsics(),
+        Eigen::Matrix4f::Identity(), depth_options);
+  }
+#endif
+  return kinectfusion::build_surface_pyramid(
+      sensor.depth_image(), sensor.depth_intrinsics(),
+      Eigen::Matrix4f::Identity(), depth_options);
 }
 
 [[nodiscard]] constexpr std::string_view failure_name(
@@ -90,9 +109,8 @@ int main(int argc, const char** argv) {
     }
 
     // build pyramids
-    const auto initial_pyramid = kinectfusion::build_surface_pyramid(
-        sensor.depth_image(), sensor.depth_intrinsics(),
-        Eigen::Matrix4f::Identity(), depth_options);
+    const auto initial_pyramid =
+        build_live_pyramid(sensor, app_options, depth_options);
     const auto* initial_normals =
         initial_pyramid.empty() ? nullptr
                                 : &initial_pyramid.front().maps.normals;
@@ -124,9 +142,8 @@ int main(int argc, const char** argv) {
       }
 
       // build pyramid
-      const auto live_pyramid = kinectfusion::build_surface_pyramid(
-          sensor.depth_image(), sensor.depth_intrinsics(),
-          Eigen::Matrix4f::Identity(), depth_options);
+      const auto live_pyramid =
+          build_live_pyramid(sensor, app_options, depth_options);
       if (live_pyramid.empty()) {
         spdlog::warn("Frame {} produced no depth pyramid",
                      sensor.current_frame_index());

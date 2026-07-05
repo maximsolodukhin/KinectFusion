@@ -235,3 +235,260 @@ TEST_CASE("Projective ICP rejects empty correspondence sets",
           kinectfusion::IcpFailure::too_few_correspondences);
   REQUIRE(result.diagnostics.correspondences == 0);
 }
+
+#ifdef KINECTFUSION_CUDA_ENABLED
+
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <random>
+
+#include <cuda_runtime_api.h>
+#include <Eigen/Geometry>
+#include <kinectfusion/depth_processing.cuh>
+
+namespace {
+
+[[nodiscard]] bool cuda_device_available() {
+  int count = 0;
+  return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
+}
+
+// Mix of holes, below-range and in-range samples so every validity branch of
+// the depth pipeline is exercised.
+[[nodiscard]] kinectfusion::image_proc::DepthImage make_random_depth(
+    std::size_t width, std::size_t height, unsigned int seed) {
+  kinectfusion::image_proc::DepthImage depth{width, height};
+  std::mt19937 rng{seed};
+  std::uniform_int_distribution<int> selector{0, 9};
+  std::uniform_int_distribution<int> in_range{2000, 40000};
+  std::uniform_int_distribution<int> below_range{1, 1999};
+  for (auto& sample : depth.data()) {
+    const int kind = selector(rng);
+    if (kind == 0) {
+      sample = 0;
+    } else if (kind == 1) {
+      sample = static_cast<std::uint16_t>(below_range(rng));
+    } else {
+      sample = static_cast<std::uint16_t>(in_range(rng));
+    }
+  }
+  return depth;
+}
+
+[[nodiscard]] Eigen::Matrix4f make_test_pose() {
+  const Eigen::AngleAxisf rotation{
+      0.3F, Eigen::Vector3f{1.0F, 2.0F, 3.0F}.normalized()};
+  return kinectfusion::make_transform_matrix(
+      rotation.toRotationMatrix(), Eigen::Vector3f{0.1F, -0.2F, 0.3F});
+}
+
+void require_depth_images_close(const kinectfusion::image_proc::DepthImage& a,
+                                const kinectfusion::image_proc::DepthImage& b,
+                                int max_difference) {
+  REQUIRE(a.width() == b.width());
+  REQUIRE(a.height() == b.height());
+  for (std::size_t i = 0; i < a.data().size(); ++i) {
+    const int difference = std::abs(static_cast<int>(a.data()[i]) -
+                                    static_cast<int>(b.data()[i]));
+    if (difference > max_difference) {
+      CAPTURE(i, a.data()[i], b.data()[i]);
+      REQUIRE(difference <= max_difference);
+    }
+  }
+}
+
+// Counts pixels whose finite-pattern differs or whose components deviate by
+// more than `margin`. Exposed as a count because pose arithmetic may use FMA
+// on one side only, which can flip validity thresholds for a stray pixel.
+[[nodiscard]] std::size_t count_mismatched_vectors(
+    const kinectfusion::image_proc::Vector3fImage& a,
+    const kinectfusion::image_proc::Vector3fImage& b, float margin) {
+  REQUIRE(a.width() == b.width());
+  REQUIRE(a.height() == b.height());
+  std::size_t mismatched = 0;
+  for (std::size_t i = 0; i < a.data().size(); ++i) {
+    const auto& lhs = a.data()[i];
+    const auto& rhs = b.data()[i];
+    if (lhs.allFinite() != rhs.allFinite()) {
+      ++mismatched;
+      continue;
+    }
+    if (lhs.allFinite() && (lhs - rhs).cwiseAbs().maxCoeff() > margin) {
+      ++mismatched;
+    }
+  }
+  return mismatched;
+}
+
+void require_vector_images_close(
+    const kinectfusion::image_proc::Vector3fImage& a,
+    const kinectfusion::image_proc::Vector3fImage& b, float margin) {
+  REQUIRE(count_mismatched_vectors(a, b, margin) == 0);
+}
+
+}  // namespace
+
+TEST_CASE("CUDA bilateral filter matches CPU", "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 1234U);
+  const auto cpu = kinectfusion::bilateral_filter_depth(depth);
+  const auto gpu = kinectfusion::cuda::bilateral_filter_depth(depth);
+  // expf vs std::exp can move the rounded result by one raw unit.
+  require_depth_images_close(cpu, gpu, 1);
+}
+
+TEST_CASE("CUDA pyramid downsample matches CPU exactly",
+          "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 5678U);
+  const auto cpu = kinectfusion::build_depth_pyramid_level(depth);
+  const auto gpu = kinectfusion::cuda::build_depth_pyramid_level(depth);
+  require_depth_images_close(cpu, gpu, 0);
+}
+
+TEST_CASE("CUDA back-projection matches CPU", "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 91011U);
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  const auto pose = make_test_pose();
+  const auto cpu =
+      kinectfusion::project_depth_to_vertices(depth, intrinsics, pose);
+  const auto gpu =
+      kinectfusion::cuda::project_depth_to_vertices(depth, intrinsics, pose);
+  require_vector_images_close(cpu, gpu, 1.0e-4F);
+}
+
+TEST_CASE("CUDA normals match CPU", "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 1213U);
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  const auto vertices = kinectfusion::project_depth_to_vertices(
+      depth, intrinsics, make_test_pose());
+  const auto cpu = kinectfusion::compute_normals_central_differences(vertices);
+  const auto gpu =
+      kinectfusion::cuda::compute_normals_central_differences(vertices);
+  require_vector_images_close(cpu, gpu, 1.0e-3F);
+}
+
+TEST_CASE("CUDA surface pyramid matches CPU with identity pose",
+          "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 1415U);
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  const auto cpu = kinectfusion::build_surface_pyramid(
+      depth, intrinsics, Eigen::Matrix4f::Identity());
+  const auto gpu = kinectfusion::cuda::build_surface_pyramid(
+      depth, intrinsics, Eigen::Matrix4f::Identity());
+  REQUIRE(cpu.size() == gpu.size());
+  for (std::size_t level = 0; level < cpu.size(); ++level) {
+    CAPTURE(level);
+    require_depth_images_close(cpu[level].depth_image,
+                               gpu[level].depth_image, 1);
+    // Levels above 0 are built from the (possibly off-by-one) filtered map,
+    // which shifts a few vertices; validity is still exact with the identity
+    // pose, so only value noise from that raw-unit jitter remains.
+    require_vector_images_close(cpu[level].maps.vertices,
+                                gpu[level].maps.vertices, 5.0e-4F);
+    REQUIRE(count_mismatched_vectors(cpu[level].maps.normals,
+                                     gpu[level].maps.normals, 2.0e-2F) <= 4);
+  }
+}
+
+TEST_CASE("CUDA surface pyramid matches CPU with rotated pose",
+          "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const auto depth = make_random_depth(64, 48, 1617U);
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  const auto pose = make_test_pose();
+  const auto cpu = kinectfusion::build_surface_pyramid(depth, intrinsics, pose);
+  const auto gpu =
+      kinectfusion::cuda::build_surface_pyramid(depth, intrinsics, pose);
+  REQUIRE(cpu.size() == gpu.size());
+  for (std::size_t level = 0; level < cpu.size(); ++level) {
+    CAPTURE(level);
+    require_depth_images_close(cpu[level].depth_image,
+                               gpu[level].depth_image, 1);
+    REQUIRE(count_mismatched_vectors(cpu[level].maps.vertices,
+                                     gpu[level].maps.vertices, 5.0e-4F) <= 4);
+    REQUIRE(count_mismatched_vectors(cpu[level].maps.normals,
+                                     gpu[level].maps.normals, 2.0e-2F) <= 8);
+  }
+}
+
+TEST_CASE("CUDA vs CPU build_surface_pyramid benchmark", "[.][benchmark]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  constexpr std::size_t width = 640;
+  constexpr std::size_t height = 480;
+  kinectfusion::image_proc::DepthImage depth{width, height};
+  for (std::size_t y = 0; y < height; ++y) {
+    for (std::size_t x = 0; x < width; ++x) {
+      const auto fx = static_cast<float>(x);
+      const auto fy = static_cast<float>(y);
+      const float value =
+          5000.0F + (2000.0F * std::sin(fx * 0.01F) * std::cos(fy * 0.01F));
+      const bool hole = (x * 7919U + y * 104729U) % 20U == 0U;
+      depth.at(x, y) =
+          hole ? std::uint16_t{0}
+               : static_cast<std::uint16_t>(std::lround(value));
+    }
+  }
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 319.5F, .cy = 239.5F};
+  const auto pose = make_test_pose();
+
+  const auto time_ms = [&](auto&& build, int iterations) {
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < iterations; ++i) {
+      const auto pyramid = build();
+      REQUIRE(pyramid.size() == 3);
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    return std::chrono::duration<double, std::milli>(elapsed).count() /
+           iterations;
+  };
+
+  // Warm up the GPU (context init, workspace allocations, JIT if any).
+  for (int i = 0; i < 5; ++i) {
+    (void)kinectfusion::cuda::build_surface_pyramid(depth, intrinsics, pose);
+  }
+
+  const double cpu_ms = time_ms(
+      [&] {
+        return kinectfusion::build_surface_pyramid(depth, intrinsics, pose);
+      },
+      10);
+  const double gpu_ms = time_ms(
+      [&] {
+        return kinectfusion::cuda::build_surface_pyramid(depth, intrinsics,
+                                                         pose);
+      },
+      100);
+
+  std::cout << "build_surface_pyramid 640x480, 3 levels\n"
+            << "  CPU:  " << cpu_ms << " ms/frame\n"
+            << "  CUDA: " << gpu_ms << " ms/frame\n"
+            << "  speedup: " << cpu_ms / gpu_ms << "x\n";
+  REQUIRE(gpu_ms < cpu_ms);
+}
+
+#endif  // KINECTFUSION_CUDA_ENABLED

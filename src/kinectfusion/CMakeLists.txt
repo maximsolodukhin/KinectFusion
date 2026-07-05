@@ -60,3 +60,25 @@ endif()
 # each component adds its sources via target_sources()
 target_sources(kinectfusion PRIVATE depth_processing.cpp icp_optimizer.cpp virtual_sensor.cpp volume.cpp)
 add_subdirectory(image_proc)
+
+if(KINECTFUSION_ENABLE_CUDA)
+  add_library(kinectfusion_cuda STATIC depth_processing.cu)
+  add_library(kinectfusion::kinectfusion_cuda ALIAS kinectfusion_cuda)
+
+  target_include_directories(
+    kinectfusion_cuda ${WARNING_GUARD} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+                                              $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+
+  target_link_libraries(kinectfusion_cuda PUBLIC Eigen3::Eigen)
+
+  target_compile_definitions(kinectfusion_cuda PUBLIC KINECTFUSION_CUDA_ENABLED)
+  target_compile_options(kinectfusion_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>)
+
+  set_target_properties(
+    kinectfusion_cuda
+    PROPERTIES CUDA_STANDARD 20
+               CUDA_STANDARD_REQUIRED YES
+               POSITION_INDEPENDENT_CODE YES)
+
+  target_link_libraries(kinectfusion PUBLIC kinectfusion_cuda)
+endif()

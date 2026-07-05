@@ -42,6 +42,7 @@ struct AppOptions {
   int bilateral_radius{2};
   float bilateral_spatial_sigma{2.0F};
   float bilateral_depth_sigma{0.08F};
+  bool cuda_depth_processing{false};
   bool interactive_relocalization{false};
   std::filesystem::path output_dir{"kinectfusion_output"};
   bool write_raycast_images{true};

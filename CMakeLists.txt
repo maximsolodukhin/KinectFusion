@@ -37,6 +37,13 @@ kinectfusion_local_options()
 # don't know if this should be set globally from here or not...
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
+if(KINECTFUSION_ENABLE_CUDA)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+  endif()
+  enable_language(CUDA)
+endif()
+
 target_compile_features(kinectfusion_options INTERFACE cxx_std_${CMAKE_CXX_STANDARD})
 
 add_library(kinectfusion::kinectfusion_options ALIAS kinectfusion_options)

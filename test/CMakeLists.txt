@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15...3.23)
+cmake_minimum_required(VERSION 3.29)
 
 project(CmakeConfigPackageTests
   VERSION ${PROJECT_VERSION}
@@ -53,6 +53,10 @@ target_link_libraries(
           kinectfusion::kinectfusion
           kinectfusion::sample_library
           Catch2::Catch2WithMain)
+
+if(KINECTFUSION_ENABLE_CUDA)
+  target_include_directories(tests PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+endif()
 
 kinectfusion_configure_linker(tests)
 

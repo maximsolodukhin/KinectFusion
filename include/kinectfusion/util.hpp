@@ -11,6 +11,12 @@
 
 #include <kinectfusion/image_proc/image.hpp>
 
+#if defined(__CUDACC__)
+#define KINECTFUSION_HOST_DEVICE __host__ __device__
+#else
+#define KINECTFUSION_HOST_DEVICE
+#endif
+
 namespace kinectfusion {
 
 using Vector3s = Eigen::Matrix<size_t, 3, 1>;
@@ -77,11 +83,13 @@ struct CameraIntrinsics {
                    static_cast<std::uint8_t>((pixel >> 24U) & 0xFFU)};
 }
 
-[[nodiscard]] inline float depth_to_meters(std::uint16_t depth,
-                                           float depth_scale) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE inline float depth_to_meters(
+    std::uint16_t depth, float depth_scale) {
   return static_cast<float>(depth) / depth_scale;
 }
 
 }  // namespace kinectfusion
+
+#undef KINECTFUSION_HOST_DEVICE
 
 #endif /* KINECTFUSION_INCLUDE_KINECTFUSION_UTIL_HPP */

@@ -1,60 +1,22 @@
 #include <kinectfusion/depth_processing.hpp>
 
+#include "depth_processing_common.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace kinectfusion {
 namespace {
 
-// Linear resolution reduction per pyramid level: each level halves width and
-// height, downsampling over a downsample_factor x downsample_factor block.
-constexpr std::size_t downsample_factor = 2U;
-
-// A raw depth sample is usable for filtering/back-projection when it is
-// non-zero and falls inside the configured metric depth range.
-void validate_options(const DepthProcessingOptions& options) {
-  if (options.levels == 0U) {
-    throw std::invalid_argument("Depth pyramid must have at least one level");
-  }
-  if (options.depth_scale <= 0.0F) {
-    throw std::invalid_argument("Depth scale must be positive");
-  }
-  if (options.min_depth < 0.0F || options.max_depth <= options.min_depth) {
-    throw std::invalid_argument("Depth range is invalid");
-  }
-  if (options.max_normal_depth_jump < 0.0F) {
-    throw std::invalid_argument(
-        "Normal depth jump threshold must be non-negative");
-  }
-  if (options.max_downsample_depth_jump < 0.0F) {
-    throw std::invalid_argument(
-        "Downsample depth jump threshold must be non-negative");
-  }
-  if (options.bilateral_radius < 0) {
-    throw std::invalid_argument("Bilateral filter radius must be non-negative");
-  }
-  if (options.bilateral_spatial_sigma <= 0.0F) {
-    throw std::invalid_argument("Bilateral spatial sigma must be positive");
-  }
-  if (options.bilateral_depth_sigma <= 0.0F) {
-    throw std::invalid_argument("Bilateral depth sigma must be positive");
-  }
-}
-
-[[nodiscard]] inline bool usable_depth(std::uint16_t raw,
-                                       const DepthProcessingOptions& options,
-                                       float& depth_meters) {
-  if (raw == 0) {
-    return false;
-  }
-  depth_meters = depth_to_meters(raw, options.depth_scale);
-  return depth_meters >= options.min_depth && depth_meters <= options.max_depth;
-}
+using depth_processing_detail::downsample_factor;
+using depth_processing_detail::usable_depth_meters;
+using depth_processing_detail::validate_options;
 
 std::optional<std::uint16_t> downsample_depth_block(
     const image_proc::DepthImage& depth_image, std::size_t col, std::size_t row,
@@ -137,20 +99,28 @@ image_proc::DepthImage bilateral_filter_depth(
   }
 
   image_proc::DepthImage filtered{depth_image.width(), depth_image.height()};
-  const float spatial_sigma2 =
-      options.bilateral_spatial_sigma * options.bilateral_spatial_sigma;
-  const float depth_sigma2 =
-      options.bilateral_depth_sigma * options.bilateral_depth_sigma;
-  const float spatial_scale = -0.5F / spatial_sigma2;
-  const float depth_weight_scale = -0.5F / depth_sigma2;
   const int width = static_cast<int>(depth_image.width());
   const int height = static_cast<int>(depth_image.height());
+  const float spatial_scale =
+      depth_processing_detail::bilateral_weight_scale(
+          options.bilateral_spatial_sigma);
+  const float depth_weight_scale =
+      depth_processing_detail::bilateral_weight_scale(
+          options.bilateral_depth_sigma);
+  // Convert every sample to meters once instead of once per window visit;
+  // NaN marks unusable samples.
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<float> meters(depth_image.data().size());
+  for (std::size_t i = 0; i < meters.size(); ++i) {
+    const float depth = usable_depth_meters(depth_image.data()[i], options);
+    meters[i] = depth > 0.0F ? depth : nan;
+  }
   for (int row = 0; row < height; ++row) {
     for (int col = 0; col < width; ++col) {
-      const auto center = depth_image.at(static_cast<unsigned int>(col),
-                                         static_cast<unsigned int>(row));
-      float center_meters = 0.0F;
-      if (!usable_depth(center, options, center_meters)) {
+      const float center_meters =
+          meters[static_cast<std::size_t>(row) * depth_image.width() +
+                 static_cast<std::size_t>(col)];
+      if (std::isnan(center_meters)) {
         continue;
       }
       float weighted_sum = 0.0F;
@@ -170,16 +140,19 @@ image_proc::DepthImage bilateral_filter_depth(
             continue;
           }
           const auto x_index = static_cast<unsigned int>(x);
-          const auto sample = depth_image.at(x_index, y_index);
-          float sample_meters = 0.0F;
-          if (!usable_depth(sample, options, sample_meters)) {
+          const float sample_meters =
+              meters[static_cast<std::size_t>(y_index) * depth_image.width() +
+                     x_index];
+          if (std::isnan(sample_meters)) {
             continue;
           }
+          const auto sample = depth_image.at(x_index, y_index);
           const float depth_difference = sample_meters - center_meters;
           const float spatial = static_cast<float>(dx * dx + dy * dy);
           const float weight =
               std::exp(spatial * spatial_scale +
-                       depth_difference * depth_difference * depth_weight_scale);
+                       depth_difference * depth_difference *
+                           depth_weight_scale);
           weighted_sum += weight * static_cast<float>(sample);
           weight_sum += weight;
         }

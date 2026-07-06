@@ -238,7 +238,6 @@ struct Workspace {
   }
 
   Stream stream;
-  // Depth or vertex input; no entry point uploads both.
   DeviceBuffer input;
   PinnedBuffer input_staging;
   PinnedBuffer output_staging;
@@ -409,13 +408,13 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
   validate_options(options);
   std::vector<DepthProcessingLevel> pyramid;
 
-  // Level level_sizes, halving until a dimension collapses (CPU semantics).
   std::vector<std::pair<std::size_t, std::size_t>> level_sizes;
   for (std::size_t w = depth_image.width(), h = depth_image.height();
-       level_sizes.size() < options.levels && w != 0U && h != 0U;
-       w /= downsample_factor, h /= downsample_factor) {
+      level_sizes.size() < options.levels && w != 0U && h != 0U;
+      w /= downsample_factor, h /= downsample_factor) {
     level_sizes.emplace_back(w, h);
   }
+
   if (level_sizes.empty()) {
     return pyramid;
   }
@@ -435,14 +434,13 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
     const auto [width, height] = level_sizes.front();
     ws.depth_levels[0].reserve(width * height * sizeof(std::uint16_t));
     bilateral_filter_kernel<<<grid_for(width, height), block_dims(), 0,
-                              ws.stream.get()>>>(
-        ws.input.as<std::uint16_t>(), ws.depth_levels[0].as<std::uint16_t>(),
-        static_cast<int>(width), static_cast<int>(height), kernel_options);
+        ws.stream.get()>>>(ws.input.as<std::uint16_t>(),
+        ws.depth_levels[0].as<std::uint16_t>(), static_cast<int>(width),
+        static_cast<int>(height), kernel_options);
     check(cudaGetLastError(), "bilateral kernel launch");
     level_depths[0] = ws.depth_levels[0].as<std::uint16_t>();
   }
 
-  // Enqueue every level's kernels, then the downloads, and synchronize once.
   for (std::size_t level = 0; level < levels; ++level) {
     const auto [width, height] = level_sizes[level];
     const std::size_t map_bytes = width * height * sizeof(float3);
@@ -450,25 +448,24 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
     ws.vertex_levels[level].reserve(map_bytes);
     ws.normal_levels[level].reserve(map_bytes);
     project_vertices_kernel<<<grid_for(width, height), block_dims(), 0,
-                              ws.stream.get()>>>(
-        level_depths[level], ws.vertex_levels[level].as<float3>(),
-        static_cast<int>(width), static_cast<int>(height),
+        ws.stream.get()>>>(level_depths[level],
+        ws.vertex_levels[level].as<float3>(), static_cast<int>(width),
+        static_cast<int>(height),
         intrinsics.scaled(static_cast<unsigned int>(level)), kernel_pose,
         kernel_options);
     check(cudaGetLastError(), "project kernel launch");
-    normals_kernel<<<grid_for(width, height), block_dims(), 0, ws.stream.get()>>>(
-        ws.vertex_levels[level].as<float3>(),
+    normals_kernel<<<grid_for(width, height), block_dims(), 0,
+        ws.stream.get()>>>(ws.vertex_levels[level].as<float3>(),
         ws.normal_levels[level].as<float3>(), static_cast<int>(width),
         static_cast<int>(height), kernel_options);
     check(cudaGetLastError(), "normals kernel launch");
-
     if (level + 1U < levels) {
       const auto [next_width, next_height] = level_sizes[level + 1];
-      ws.depth_levels[level + 1].reserve(next_width * next_height *
-                                         sizeof(std::uint16_t));
+      ws.depth_levels[level + 1].reserve(
+          next_width * next_height * sizeof(std::uint16_t));
       downsample_kernel<<<grid_for(next_width, next_height), block_dims(), 0,
-                          ws.stream.get()>>>(
-          level_depths[level], ws.depth_levels[level + 1].as<std::uint16_t>(),
+          ws.stream.get()>>>(level_depths[level],
+          ws.depth_levels[level + 1].as<std::uint16_t>(),
           static_cast<int>(width), static_cast<int>(next_width),
           static_cast<int>(next_height), kernel_options);
       check(cudaGetLastError(), "downsample kernel launch");
@@ -494,17 +491,17 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
     if (level > 0 || filter) {
       const std::size_t depth_bytes = width * height * sizeof(std::uint16_t);
       check(cudaMemcpyAsync(staging + offset, level_depths[level], depth_bytes,
-                            cudaMemcpyDeviceToHost, ws.stream.get()),
-            "depth download");
+                cudaMemcpyDeviceToHost, ws.stream.get()),
+          "depth download");
       offset += depth_bytes;
     }
     check(cudaMemcpyAsync(staging + offset, ws.vertex_levels[level].as<void>(),
-                          map_bytes, cudaMemcpyDeviceToHost, ws.stream.get()),
-          "vertex download");
+              map_bytes, cudaMemcpyDeviceToHost, ws.stream.get()),
+        "vertex download");
     offset += map_bytes;
     check(cudaMemcpyAsync(staging + offset, ws.normal_levels[level].as<void>(),
-                          map_bytes, cudaMemcpyDeviceToHost, ws.stream.get()),
-          "normal download");
+              map_bytes, cudaMemcpyDeviceToHost, ws.stream.get()),
+        "normal download");
     offset += map_bytes;
   }
 
@@ -534,8 +531,8 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
     const std::size_t map_bytes = width * height * sizeof(float3);
     if (level > 0 || filter) {
       const std::size_t depth_bytes = width * height * sizeof(std::uint16_t);
-      std::memcpy(depth_maps[level].data().data(), staging + offset,
-                  depth_bytes);
+      std::memcpy(
+          depth_maps[level].data().data(), staging + offset, depth_bytes);
       offset += depth_bytes;
     }
     std::memcpy(vertex_maps[level].data().data(), staging + offset, map_bytes);
@@ -543,9 +540,8 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
     std::memcpy(normal_maps[level].data().data(), staging + offset, map_bytes);
     offset += map_bytes;
     pyramid.emplace_back(std::move(depth_maps[level]),
-                         intrinsics.scaled(static_cast<unsigned int>(level)),
-                         std::move(vertex_maps[level]),
-                         std::move(normal_maps[level]));
+        intrinsics.scaled(static_cast<unsigned int>(level)),
+        std::move(vertex_maps[level]), std::move(normal_maps[level]));
   }
   return pyramid;
 }

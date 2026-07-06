@@ -55,7 +55,8 @@ target_link_libraries(
           Catch2::Catch2WithMain)
 
 if(KINECTFUSION_ENABLE_CUDA)
-  target_include_directories(tests PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(tests PRIVATE CUDA::cudart)
 endif()
 
 kinectfusion_configure_linker(tests)

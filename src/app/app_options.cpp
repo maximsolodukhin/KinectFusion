@@ -134,6 +134,8 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
                  "Bilateral filter spatial sigma in pixels.");
   app.add_option("--bilateral-depth-sigma", app_options.bilateral_depth_sigma,
                  "Bilateral filter depth sigma in meters.");
+  app.add_flag("--cuda,!--no-cuda", app_options.cuda_depth_processing,
+               "Run depth processing on the GPU (requires a CUDA build).");
   app.add_flag("--interactive-relocalization",
                app_options.interactive_relocalization,
                "Pause after tracking failure before continuing.");

@@ -129,7 +129,6 @@ class Buffer {
     if (bytes <= capacity_) {
       return;
     }
-    // Free the old block before allocating its replacement.
     Allocator::free(ptr_);
     ptr_ = nullptr;
     capacity_ = 0;

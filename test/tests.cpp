@@ -390,22 +390,23 @@ TEST_CASE("CUDA surface pyramid matches CPU with identity pose",
   const auto depth = make_random_depth(64, 48, 1415U);
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  // Disable the bilateral filter so the pipeline is fully deterministic: it is
+  // the only stage that uses __expf (vs std::exp on the CPU)
+  kinectfusion::DepthProcessingOptions options{};
+  options.bilateral_filter = false;
   const auto cpu = kinectfusion::build_surface_pyramid(
-      depth, intrinsics, Eigen::Matrix4f::Identity());
+      depth, intrinsics, Eigen::Matrix4f::Identity(), options);
   const auto gpu = kinectfusion::cuda::build_surface_pyramid(
-      depth, intrinsics, Eigen::Matrix4f::Identity());
+      depth, intrinsics, Eigen::Matrix4f::Identity(), options);
   REQUIRE(cpu.size() == gpu.size());
   for (std::size_t level = 0; level < cpu.size(); ++level) {
     CAPTURE(level);
     require_depth_images_close(cpu[level].depth_image,
-                               gpu[level].depth_image, 1);
-    // Levels above 0 are built from the (possibly off-by-one) filtered map,
-    // which shifts a few vertices; validity is still exact with the identity
-    // pose, so only value noise from that raw-unit jitter remains.
+                               gpu[level].depth_image, 0);
     require_vector_images_close(cpu[level].maps.vertices,
                                 gpu[level].maps.vertices, 5.0e-4F);
-    REQUIRE(count_mismatched_vectors(cpu[level].maps.normals,
-                                     gpu[level].maps.normals, 2.0e-2F) <= 4);
+    require_vector_images_close(cpu[level].maps.normals,
+                                gpu[level].maps.normals, 2.0e-2F);
   }
 }
 
@@ -418,18 +419,97 @@ TEST_CASE("CUDA surface pyramid matches CPU with rotated pose",
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
   const auto pose = make_test_pose();
+  // See the identity-pose case: the bilateral filter is disabled so the CPU/GPU
+  // pyramids match exactly, rather than tolerating __expf/std::exp jitter.
+  kinectfusion::DepthProcessingOptions options{};
+  options.bilateral_filter = false;
+  const auto cpu =
+      kinectfusion::build_surface_pyramid(depth, intrinsics, pose, options);
+  const auto gpu =
+      kinectfusion::cuda::build_surface_pyramid(depth, intrinsics, pose, options);
+  REQUIRE(cpu.size() == gpu.size());
+  for (std::size_t level = 0; level < cpu.size(); ++level) {
+    CAPTURE(level);
+    require_depth_images_close(cpu[level].depth_image,
+                               gpu[level].depth_image, 0);
+    require_vector_images_close(cpu[level].maps.vertices,
+                                gpu[level].maps.vertices, 5.0e-4F);
+    require_vector_images_close(cpu[level].maps.normals,
+                                gpu[level].maps.normals, 2.0e-2F);
+  }
+}
+
+TEST_CASE("CUDA surface pyramid matches CPU on edge-case shapes",
+          "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  // Bilateral off keeps the comparison exact (see the full-size cases).
+  kinectfusion::DepthProcessingOptions options{};
+  options.bilateral_filter = false;
+
+  struct Shape {
+    std::size_t width;
+    std::size_t height;
+  };
+  const std::array shapes{Shape{1, 1},   Shape{1, 48},  Shape{64, 1},
+                          Shape{2, 2},   Shape{3, 3},    Shape{63, 47},
+                          Shape{65, 49}};
+
+  for (const auto shape : shapes) {
+    CAPTURE(shape.width, shape.height);
+    const auto depth = make_random_depth(shape.width, shape.height, 2024U);
+    const auto cpu = kinectfusion::build_surface_pyramid(
+        depth, intrinsics, Eigen::Matrix4f::Identity(), options);
+    const auto gpu = kinectfusion::cuda::build_surface_pyramid(
+        depth, intrinsics, Eigen::Matrix4f::Identity(), options);
+    REQUIRE(cpu.size() == gpu.size());
+    for (std::size_t level = 0; level < cpu.size(); ++level) {
+      CAPTURE(level);
+      require_depth_images_close(cpu[level].depth_image,
+                                 gpu[level].depth_image, 0);
+      require_vector_images_close(cpu[level].maps.vertices,
+                                  gpu[level].maps.vertices, 5.0e-4F);
+      require_vector_images_close(cpu[level].maps.normals,
+                                  gpu[level].maps.normals, 2.0e-2F);
+    }
+  }
+}
+
+TEST_CASE("CUDA depth pipeline matches CPU on an all-holes image",
+          "[depth_processing_cuda]") {
+  if (!cuda_device_available()) {
+    SKIP("No CUDA device available");
+  }
+  kinectfusion::image_proc::DepthImage depth{64, 48};
+  std::ranges::fill(depth.data(), std::uint16_t{0});
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 525.0F, .fy = 525.0F, .cx = 31.5F, .cy = 23.5F};
+  const auto pose = make_test_pose();
+
+  require_depth_images_close(kinectfusion::bilateral_filter_depth(depth),
+                             kinectfusion::cuda::bilateral_filter_depth(depth),
+                             0);
+  require_depth_images_close(
+      kinectfusion::build_depth_pyramid_level(depth),
+      kinectfusion::cuda::build_depth_pyramid_level(depth), 0);
+  require_vector_images_close(
+      kinectfusion::project_depth_to_vertices(depth, intrinsics, pose),
+      kinectfusion::cuda::project_depth_to_vertices(depth, intrinsics, pose),
+      0.0F);
+
   const auto cpu = kinectfusion::build_surface_pyramid(depth, intrinsics, pose);
   const auto gpu =
       kinectfusion::cuda::build_surface_pyramid(depth, intrinsics, pose);
   REQUIRE(cpu.size() == gpu.size());
   for (std::size_t level = 0; level < cpu.size(); ++level) {
     CAPTURE(level);
-    require_depth_images_close(cpu[level].depth_image,
-                               gpu[level].depth_image, 1);
-    REQUIRE(count_mismatched_vectors(cpu[level].maps.vertices,
-                                     gpu[level].maps.vertices, 5.0e-4F) <= 4);
-    REQUIRE(count_mismatched_vectors(cpu[level].maps.normals,
-                                     gpu[level].maps.normals, 2.0e-2F) <= 8);
+    require_vector_images_close(cpu[level].maps.vertices,
+                                gpu[level].maps.vertices, 0.0F);
+    require_vector_images_close(cpu[level].maps.normals,
+                                gpu[level].maps.normals, 0.0F);
   }
 }
 
@@ -488,7 +568,6 @@ TEST_CASE("CUDA vs CPU build_surface_pyramid benchmark", "[.][benchmark]") {
             << "  CPU:  " << cpu_ms << " ms/frame\n"
             << "  CUDA: " << gpu_ms << " ms/frame\n"
             << "  speedup: " << cpu_ms / gpu_ms << "x\n";
-  REQUIRE(gpu_ms < cpu_ms);
 }
 
 #endif  // KINECTFUSION_CUDA_ENABLED

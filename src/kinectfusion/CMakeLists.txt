@@ -69,11 +69,19 @@ if(KINECTFUSION_ENABLE_CUDA)
     kinectfusion_cuda ${WARNING_GUARD} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
                                               $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
 
-  target_link_libraries(kinectfusion_cuda PUBLIC Eigen3::Eigen)
+  target_link_libraries(
+    kinectfusion_cuda
+    PUBLIC Eigen3::Eigen
+    PRIVATE kinectfusion_options
+            kinectfusion_warnings)
 
   target_compile_definitions(kinectfusion_cuda PUBLIC KINECTFUSION_CUDA_ENABLED)
-  target_compile_options(kinectfusion_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra>)
+  target_compile_options(
+    kinectfusion_cuda
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--forward-unknown-to-host-compiler>)
 
+  # NOTE: the rest of the project is C++23, but this target stays at C++20.
+  # Bump this to ${CMAKE_CXX_STANDARD} once a released nvcc implements c++23.
   set_target_properties(
     kinectfusion_cuda
     PROPERTIES CUDA_STANDARD 20

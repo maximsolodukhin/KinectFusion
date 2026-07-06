@@ -76,6 +76,14 @@ int main(int argc, const char** argv) {
 
     app::validate_options(app_options);
 
+#ifndef KINECTFUSION_CUDA_ENABLED
+    if (app_options.cuda_depth_processing) {
+      spdlog::warn(
+          "--cuda requested but this binary was built without CUDA support; "
+          "falling back to CPU depth processing.");
+    }
+#endif
+
     // load first frame to sensor
     kinectfusion::VirtualSensor sensor;
     if (!sensor.init(app_options.dataset_dir)) {

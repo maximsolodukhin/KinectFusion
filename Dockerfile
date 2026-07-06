@@ -12,6 +12,11 @@ FROM ubuntu:24.04 AS dev
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Ubuntu 24.04's default GCC is 13, which is what we build with. We do pull in
+# Clang 21 (clangd, clang-tidy, clang-format) from apt.llvm.org so IntelliSense
+# and the tidy pass agree with libstdc++ on C++23 concept-gated headers like
+# <expected> (libstdc++'s <expected> is gated on __cpp_concepts >= 202002L,
+# which Clang < 19 doesn't advertise).
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -21,9 +26,6 @@ RUN set -eux; \
         git \
         build-essential \
         gdb \
-        clangd \
-        clang-tidy \
-        clang-format \
         cppcheck \
         ccache \
         zlib1g-dev \
@@ -33,8 +35,20 @@ RUN set -eux; \
         | gpg --dearmor -o /usr/share/keyrings/kitware-archive-keyring.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main" \
         > /etc/apt/sources.list.d/kitware.list; \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+        > /etc/apt/sources.list.d/llvm.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends cmake; \
+    apt-get install -y --no-install-recommends \
+        cmake \
+        clangd-21 \
+        clang-tidy-21 \
+        clang-format-21; \
+    update-alternatives \
+        --install /usr/bin/clangd       clangd       /usr/bin/clangd-21       210 \
+        --slave   /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-21 \
+        --slave   /usr/bin/clang-format clang-format /usr/bin/clang-format-21; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -58,14 +72,12 @@ COPY . /workspace
 #     - SANITIZER_UNDEFINED UndefinedBehaviorSanitizer
 # 
 # Any failure aborts `docker build`, so no image is produced.
-RUN cmake -S . -B build-debug \
-        -DCMAKE_BUILD_TYPE=Debug \
-        -DBUILD_TESTING=ON \
-    && cmake --build build-debug -j"$(nproc)" \
-    && ctest --test-dir build-debug --output-on-failure --no-tests=error
+RUN cmake --preset ci-checks \
+    && cmake --build --preset ci-checks --parallel "$(nproc)" \
+    && ctest --preset ci-checks
 
-# KINECTFUSION_ENABLE_HARDENING=ON left at default, which via bakes the following
-# into the shipped binary (via cmake/Hardening.cmake):
+# KINECTFUSION_ENABLE_HARDENING=ON is set by the release preset, which bakes
+# the following into the shipped binary (via cmake/Hardening.cmake):
 #   - UBSan minimal runtime    (-fsanitize=undefined -fsanitize-minimal-runtime)
 #                              same UB checks as full UBSan, aborts via
 #                              __builtin_trap instead of libubsan.
@@ -77,15 +89,9 @@ RUN cmake -S . -B build-debug \
 #   - -fcf-protection          Intel CET indirect-branch tracking.
 #   - -fstack-clash-protection page-by-page stack growth guard.
 #   - WARNINGS_AS_ERRORS       treat compile warnings as errors
-RUN cmake -S . -B build \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_TESTING=OFF \
-        -DKINECTFUSION_ENABLE_CLANG_TIDY=OFF \
-        -DKINECTFUSION_ENABLE_CPPCHECK=OFF \
-        -DKINECTFUSION_ENABLE_SANITIZER_ADDRESS=OFF \
-        -DKINECTFUSION_ENABLE_SANITIZER_UNDEFINED=OFF \
-    && cmake --build build --target kinectfusion_app -j"$(nproc)" \
-    && strip --strip-unneeded build/src/app/kinectfusion
+RUN cmake --preset release \
+    && cmake --build --preset release --parallel "$(nproc)" \
+    && strip --strip-unneeded build/release/src/app/kinectfusion
 
 FROM ubuntu:24.04 AS runtime
 
@@ -100,7 +106,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app
 
-COPY --from=1 /workspace/build/src/app/kinectfusion /usr/local/bin/kinectfusion
+COPY --from=1 /workspace/build/release/src/app/kinectfusion /usr/local/bin/kinectfusion
 
 USER app
 WORKDIR /home/app

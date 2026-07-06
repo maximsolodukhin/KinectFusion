@@ -9,10 +9,12 @@ development image and the production image. All stages are based on
 | `dev`               | Toolchain + dev-only tools (gdb, clang-tidy, cppcheck, ccache). No source baked in; you bind-mount the project at run time. | `kinectfusion-dev` |
 | `runtime` (default) | Minimal Ubuntu with the compiled `kinectfusion` binary and its runtime libs.                                                | `kinectfusion`     |
 
-Building `runtime` transparently runs an unnamed intermediate stage that
-performs two passes over the source: (1) a Debug build with `clang-tidy`,
+Build modes are centralized in `CMakePresets.json`. Building `runtime`
+transparently runs an unnamed intermediate stage that performs two preset-driven
+passes over the source: (1) `ci-checks`, a Debug build with `clang-tidy`,
 `cppcheck`, ASan and UBSan all ON plus the `ctest` suite — any failure aborts
-the whole `docker build` — and (2) a Release build of the `kinectfusion` binary.
+the whole `docker build` — and (2) `release`, a Release build of the
+`kinectfusion` binary.
 
 ## Dev Container
 
@@ -37,12 +39,36 @@ container with **Dev Containers: Attach to Running Container** in the IDE:
 
 ```bash
 cd /workspace
-cmake -S . -B build
-cmake --build build -j
+cmake --workflow --preset dev-strict
 ```
 
 `build/` lives in the bind-mounted workspace, so it's visible from the host
 filesystem too.
+
+### Build presets
+
+The common build modes are available as CMake presets:
+
+| Preset        | Purpose                                                                 |
+| ------------- | ----------------------------------------------------------------------- |
+| `dev-strict`  | Debug build, tests, warnings as errors, clang-tidy, cppcheck, ASan/UBSan |
+| `dev-relaxed` | Debug build, tests, warnings allowed, static analysis off, ASan/UBSan    |
+| `ci-checks`   | Docker validation build, equivalent to the strict checked path           |
+| `release`     | Optimized production binary with tests, analyzers, sanitizers, and progress logging off |
+
+Inside the dev container:
+
+```bash
+# Full checked build + tests.
+cmake --workflow --preset dev-strict
+
+# Faster local build that still runs tests but does not fail on warnings.
+cmake --workflow --preset dev-relaxed
+
+# Optimized binary.
+cmake --preset release
+cmake --build --preset release --parallel
+```
 
 ### Stop / clean up
 
@@ -55,9 +81,7 @@ docker compose down
 ```bash
 git clone git@github.com:maximsolodukhin/KinectFusion.git
 cd KinectFusion
-mkdir build
-cmake -S . -B build
-cmake --build build -j 5
+cmake --workflow --preset dev-strict
 ```
 
 ## Production image
@@ -85,11 +109,12 @@ docker compose run --rm \
 ## 1. Build
 
 ```bash
-cmake -S . -B build
-cmake --build build --target kinectfusion_app -j 5
+cmake --preset dev-relaxed
+cmake --build --preset dev-relaxed --parallel
 ```
 
-The executable is `build/src/app/kinectfusion`.
+The executable is `build/dev-relaxed/src/app/kinectfusion`. The release preset
+writes the optimized executable to `build/release/src/app/kinectfusion`.
 
 ## 2. Get a dataset
 
@@ -103,7 +128,7 @@ This repo expects it in the `data/` folder at the project root, e.g.
 ## 3. Run
 
 ```bash
-./build/src/app/kinectfusion data/rgbd_dataset_freiburg1_xyz --frames 5 \
+./build/dev-relaxed/src/app/kinectfusion data/rgbd_dataset_freiburg1_xyz --frames 5 \
   --volume-resolution 256 --voxel-size 0.01 --volume-camera-margin 0.5 \
   --output-dir outputs
 ```
@@ -116,7 +141,7 @@ This writes one raycast render per frame to `outputs/`:
 Single frame only (just integrate + raycast, no tracking):
 
 ```bash
-./build/src/app/kinectfusion data/rgbd_dataset_freiburg1_xyz --frames 1 \
+./build/dev-relaxed/src/app/kinectfusion data/rgbd_dataset_freiburg1_xyz --frames 1 \
   --volume-resolution 256 --voxel-size 0.01 --volume-camera-margin 0.5 \
   --output-dir outputs
 ```
@@ -135,7 +160,7 @@ Single frame only (just integrate + raycast, no tracking):
 | `--no-write-raycast-images` | —                                    | Skip PNG output                           |
 | `--no-write-point-clouds`   | —                                    | Skip PLY output                           |
 
-`./build/src/app/kinectfusion --help` lists everything.
+`./build/dev-relaxed/src/app/kinectfusion --help` lists everything.
 
 ## Notes
 
@@ -206,5 +231,5 @@ tree at run time:
 docker build --target dev -t kinectfusion-dev .
 docker run --rm -it -v "$PWD:/workspace" -w /workspace kinectfusion-dev bash
 # then, inside the container:
-cmake -S . -B build && cmake --build build --target kinectfusion_app -j"$(nproc)"
+cmake --workflow --preset dev-strict
 ```

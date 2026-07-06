@@ -1,0 +1,198 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "dev-strict",
+      "displayName": "Dev strict checks",
+      "description": "Debug build with tests, warnings as errors, static analysis, ASan, and UBSan.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "KINECTFUSION_WARNINGS_AS_ERRORS": "ON",
+        "KINECTFUSION_ENABLE_CLANG_TIDY": "ON",
+        "KINECTFUSION_ENABLE_CPPCHECK": "ON",
+        "KINECTFUSION_ENABLE_LOGGING": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_ADDRESS": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_UNDEFINED": "ON"
+      }
+    },
+    {
+      "name": "dev-relaxed",
+      "displayName": "Dev relaxed build",
+      "description": "Debug build with tests and sanitizers, but warnings are not fatal and static analysis is disabled.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "KINECTFUSION_WARNINGS_AS_ERRORS": "OFF",
+        "KINECTFUSION_ENABLE_CLANG_TIDY": "OFF",
+        "KINECTFUSION_ENABLE_CPPCHECK": "OFF",
+        "KINECTFUSION_ENABLE_LOGGING": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_ADDRESS": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_UNDEFINED": "ON"
+      }
+    },
+    {
+      "name": "ci-checks",
+      "displayName": "CI checks",
+      "description": "Validation build used by the Docker image: tests, warnings as errors, static analysis, ASan, and UBSan.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "KINECTFUSION_WARNINGS_AS_ERRORS": "ON",
+        "KINECTFUSION_ENABLE_CLANG_TIDY": "ON",
+        "KINECTFUSION_ENABLE_CPPCHECK": "ON",
+        "KINECTFUSION_ENABLE_LOGGING": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_ADDRESS": "ON",
+        "KINECTFUSION_ENABLE_SANITIZER_UNDEFINED": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized production build of the kinectfusion executable.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF",
+        "KINECTFUSION_WARNINGS_AS_ERRORS": "ON",
+        "KINECTFUSION_ENABLE_CLANG_TIDY": "OFF",
+        "KINECTFUSION_ENABLE_CPPCHECK": "OFF",
+        "KINECTFUSION_ENABLE_LOGGING": "OFF",
+        "KINECTFUSION_ENABLE_SANITIZER_ADDRESS": "OFF",
+        "KINECTFUSION_ENABLE_SANITIZER_LEAK": "OFF",
+        "KINECTFUSION_ENABLE_SANITIZER_UNDEFINED": "OFF",
+        "KINECTFUSION_ENABLE_SANITIZER_THREAD": "OFF",
+        "KINECTFUSION_ENABLE_SANITIZER_MEMORY": "OFF",
+        "KINECTFUSION_ENABLE_HARDENING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-strict",
+      "configurePreset": "dev-strict"
+    },
+    {
+      "name": "dev-relaxed",
+      "configurePreset": "dev-relaxed"
+    },
+    {
+      "name": "ci-checks",
+      "configurePreset": "ci-checks"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "targets": [
+        "kinectfusion_app"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-strict",
+      "configurePreset": "dev-strict",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "dev-relaxed",
+      "configurePreset": "dev-relaxed",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ci-checks",
+      "configurePreset": "ci-checks",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "dev-strict",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "dev-strict"
+        },
+        {
+          "type": "build",
+          "name": "dev-strict"
+        },
+        {
+          "type": "test",
+          "name": "dev-strict"
+        }
+      ]
+    },
+    {
+      "name": "dev-relaxed",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "dev-relaxed"
+        },
+        {
+          "type": "build",
+          "name": "dev-relaxed"
+        },
+        {
+          "type": "test",
+          "name": "dev-relaxed"
+        }
+      ]
+    },
+    {
+      "name": "ci-checks",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci-checks"
+        },
+        {
+          "type": "build",
+          "name": "ci-checks"
+        },
+        {
+          "type": "test",
+          "name": "ci-checks"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "release"
+        },
+        {
+          "type": "build",
+          "name": "release"
+        }
+      ]
+    }
+  ]
+}

@@ -89,18 +89,23 @@ ProjectiveIcpTracker::find_correspondences(
     const Eigen::Matrix4f& camera_to_world) const {
   CorrespondenceSet correspondences;
 
+  const ConstHostVertexNormalMapsView live_view = view(live_maps);
+  const ConstHostSurfaceMapsView model_view = view(model_maps);
   const auto rotation = camera_to_world.block<3, 3>(0, 0);
   const auto translation = camera_to_world.block<3, 1>(0, 3);
 
-  for (unsigned int y = 0; y < live_maps.vertices.height(); ++y) {
-    for (unsigned int x = 0; x < live_maps.vertices.width(); ++x) {
-      const Eigen::Vector3f& live_vertex = live_maps.vertices.at(x, y);
-      const Eigen::Vector3f& live_normal = live_maps.normals.at(x, y);
+  for (std::size_t y = 0; y < live_view.vertices.height; ++y) {
+    for (std::size_t x = 0; x < live_view.vertices.width; ++x) {
+      const Vec3f& live_vertex_sample = live_view.vertices.at(x, y);
+      const Vec3f& live_normal_sample = live_view.normals.at(x, y);
 
-      if (!live_vertex.allFinite() || !live_normal.allFinite()) {
+      if (!all_finite(live_vertex_sample) ||
+          !all_finite(live_normal_sample)) {
         continue;
       }
 
+      const Eigen::Vector3f live_vertex = to_eigen(live_vertex_sample);
+      const Eigen::Vector3f live_normal = to_eigen(live_normal_sample);
       const Eigen::Vector3f source = rotation * live_vertex + translation;
       const Eigen::Vector4f source_in_model_camera =
           model_world_to_camera *
@@ -114,19 +119,22 @@ ProjectiveIcpTracker::find_correspondences(
       const auto model_x = static_cast<int>(std::lround(pixel.x()));
       const auto model_y = static_cast<int>(std::lround(pixel.y()));
       if (model_x < 0 || model_y < 0 ||
-          static_cast<unsigned int>(model_x) >= model_maps.points.width() ||
-          static_cast<unsigned int>(model_y) >= model_maps.points.height()) {
+          static_cast<std::size_t>(model_x) >= model_view.points.width ||
+          static_cast<std::size_t>(model_y) >= model_view.points.height) {
         continue;
       }
 
-      const Eigen::Vector3f& model_vertex = model_maps.points.at(
-          static_cast<unsigned int>(model_x), static_cast<unsigned int>(model_y));
-      const Eigen::Vector3f& model_normal = model_maps.normals.at(
-          static_cast<unsigned int>(model_x), static_cast<unsigned int>(model_y));
-      if (!model_vertex.allFinite() || !model_normal.allFinite()) {
+      const Vec3f& model_vertex_sample = model_view.points.at(
+          static_cast<std::size_t>(model_x), static_cast<std::size_t>(model_y));
+      const Vec3f& model_normal_sample = model_view.normals.at(
+          static_cast<std::size_t>(model_x), static_cast<std::size_t>(model_y));
+      if (!all_finite(model_vertex_sample) ||
+          !all_finite(model_normal_sample)) {
         continue;
       }
 
+      const Eigen::Vector3f model_vertex = to_eigen(model_vertex_sample);
+      const Eigen::Vector3f model_normal = to_eigen(model_normal_sample);
       const Eigen::Vector3f source_normal = (rotation * live_normal).normalized();
       const Eigen::Vector3f delta = source - model_vertex;
       const float distance = delta.norm();

@@ -1,3 +1,10 @@
+set(KINECTFUSION_ENABLE_LOGGING_DEFAULT ON)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(KINECTFUSION_ENABLE_LOGGING_DEFAULT OFF)
+endif()
+
+option(KINECTFUSION_ENABLE_LOGGING "Enable KinectFusion progress logging" ${KINECTFUSION_ENABLE_LOGGING_DEFAULT})
+
 add_executable(kinectfusion_app main.cpp app_options.cpp frame_output.cpp)
 
 set_target_properties(kinectfusion_app PROPERTIES OUTPUT_NAME kinectfusion)
@@ -11,6 +18,10 @@ target_link_libraries(
           spdlog::spdlog)
 
 target_compile_definitions(kinectfusion_app PRIVATE KINECTFUSION_VERSION="${PROJECT_VERSION}")
+
+if(KINECTFUSION_ENABLE_LOGGING)
+  target_compile_definitions(kinectfusion_app PRIVATE KINECTFUSION_ENABLE_LOGGING)
+endif()
 
 target_compile_features(kinectfusion_app PRIVATE cxx_std_${CMAKE_CXX_STANDARD})
 

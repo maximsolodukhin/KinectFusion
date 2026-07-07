@@ -10,7 +10,13 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    command: sleep infinity
+    command:
+      - bash
+      - -lc
+      - |
+        set -e
+        ./scripts/fetch_tum_freiburg1_xyz.sh
+        exec sleep infinity
 
   kinectfusion:
     build:

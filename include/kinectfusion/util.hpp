@@ -7,9 +7,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
 #include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/vector.hpp>
 
 namespace kinectfusion {
 
@@ -56,10 +56,7 @@ struct CameraIntrinsics {
   }
 };
 
-[[nodiscard]] inline Eigen::Vector3f invalid_vector() {
-  const float nan = std::numeric_limits<float>::quiet_NaN();
-  return Eigen::Vector3f{nan, nan, nan};
-}
+[[nodiscard]] inline Vec3f invalid_vector() { return invalid_vec3f(); }
 
 [[nodiscard]] inline Eigen::Matrix4f make_transform_matrix(
     const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {

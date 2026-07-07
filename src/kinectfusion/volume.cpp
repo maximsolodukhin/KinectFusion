@@ -55,6 +55,7 @@ void Volume::integrate_depth_image(
   validate_options(options);
   const Eigen::Matrix3f rotation = world_to_camera.block<3, 3>(0, 0);
   const Eigen::Vector3f translation = world_to_camera.block<3, 1>(0, 3);
+  const Eigen::Vector3f volume_origin = to_eigen(origin_);
   const int width = static_cast<int>(depth_image.width());
   const int height = static_cast<int>(depth_image.height());
 
@@ -62,10 +63,11 @@ void Volume::integrate_depth_image(
     for (size_t y = 0; y < resolution_.y(); ++y) {
       for (size_t x = 0; x < resolution_.x(); ++x) {
         const Eigen::Vector3f center =
-            origin_ + Eigen::Vector3f{static_cast<float>(x) + 0.5F,
-                                      static_cast<float>(y) + 0.5F,
-                                      static_cast<float>(z) + 0.5F} *
-                          voxel_size_;
+            volume_origin +
+            Eigen::Vector3f{static_cast<float>(x) + 0.5F,
+                            static_cast<float>(y) + 0.5F,
+                            static_cast<float>(z) + 0.5F} *
+                voxel_size_;
         const Eigen::Vector3f camera_point = rotation * center + translation;
         if (camera_point.z() <= 0.0F) {
           continue;
@@ -109,9 +111,10 @@ void Volume::integrate_depth_image(
 
         float weight = options.observation_weight;
         if (options.view_angle_weighting && normals != nullptr) {
-          const Eigen::Vector3f& normal = normals->at(
+          const Vec3f& normal_sample = normals->at(
               static_cast<unsigned int>(px), static_cast<unsigned int>(py));
-          if (normal.allFinite()) {
+          if (all_finite(normal_sample)) {
+            const Eigen::Vector3f normal = to_eigen(normal_sample);
             // View direction is the (quantised) pixel ray, matching the ray
             // used for the projective TSDF distance above.
             const Eigen::Vector3f view = -ray.normalized();
@@ -131,9 +134,9 @@ void Volume::integrate_depth_image(
         if (color_image != nullptr && signed_distance <= truncation_distance * 0.5F) {
           const ColorRgba rgba = rgba_from_pixel(color_image->at(
               static_cast<unsigned int>(px), static_cast<unsigned int>(py)));
-          const Eigen::Vector3f observed{static_cast<float>(rgba.x()),
-                                         static_cast<float>(rgba.y()),
-                                         static_cast<float>(rgba.z())};
+          const Vec3f observed{.x = static_cast<float>(rgba.x()),
+                               .y = static_cast<float>(rgba.y()),
+                               .z = static_cast<float>(rgba.z())};
           ColorVoxel& color_voxel = color_at(x, y, z);
           const float color_combined = color_voxel.weight + weight;
           color_voxel.color = (color_voxel.color * color_voxel.weight + observed * weight) / color_combined;
@@ -155,12 +158,13 @@ SurfaceMaps Volume::raycast(const CameraIntrinsics& intrinsics,
 
 SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
   validate_options(options);
-  const float nan = std::numeric_limits<float>::quiet_NaN();
   SurfaceMaps maps{
-      .points = image_proc::Vector3fImage{options.width, options.height,
-                                          Eigen::Vector3f::Constant(nan)},
-      .normals = image_proc::Vector3fImage{
-          options.width, options.height, Eigen::Vector3f::Constant(nan)},
+      .points =
+          image_proc::Vector3fImage{options.width, options.height,
+                                    invalid_vector()},
+      .normals =
+          image_proc::Vector3fImage{options.width, options.height,
+                                    invalid_vector()},
       .colors = image_proc::ColorImage{options.width, options.height}};
 
   const Eigen::Matrix3f rotation = options.camera_to_world.block<3, 3>(0, 0);
@@ -199,9 +203,9 @@ SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
               previous_point + alpha * (point - previous_point);
           Eigen::Vector3f normal;
           if (sample_normal(surface, normal, options.tsdf_from_valid_corners)) {
-            maps.points.at(col, row) = surface;
-            maps.normals.at(col, row) = normal;
-            Eigen::Vector3f color;
+            maps.points.at(col, row) = from_eigen(surface);
+            maps.normals.at(col, row) = from_eigen(normal);
+            Vec3f color;
             if (sample_color(surface, color)) {
               maps.colors.at(col, row) = pixel_from_color(color);
             }
@@ -227,8 +231,10 @@ SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
 }
 
 Volume::GridSample Volume::grid_sample(const Eigen::Vector3f& point) const {
+  const Eigen::Vector3f volume_origin = to_eigen(origin_);
   const Eigen::Vector3f grid =
-      (point - origin_) / voxel_size_ - Eigen::Vector3f::Constant(0.5F);
+      (point - volume_origin) / voxel_size_ -
+      Eigen::Vector3f::Constant(0.5F);
   const int base_x = static_cast<int>(std::floor(grid.x()));
   const int base_y = static_cast<int>(std::floor(grid.y()));
   const int base_z = static_cast<int>(std::floor(grid.z()));
@@ -320,10 +326,9 @@ bool Volume::sample_tsdf_valid_corners(const Eigen::Vector3f& point,
   return std::isfinite(distance);
 }
 
-bool Volume::sample_color(const Eigen::Vector3f& point,
-                          Eigen::Vector3f& color) const {
+bool Volume::sample_color(const Eigen::Vector3f& point, Vec3f& color) const {
   const GridSample sample = grid_sample(point);
-  Eigen::Vector3f accumulated = Eigen::Vector3f::Zero();
+  Vec3f accumulated{};
   float weight_sum = 0.0F;
   for(Corner& c : trilinear_corners(sample)) {
     if (!in_bounds(c.x, c.y, c.z)) {
@@ -331,7 +336,7 @@ bool Volume::sample_color(const Eigen::Vector3f& point,
     }
     const ColorVoxel& voxel = color_at(c.x, c.y, c.z);
     if (voxel.weight <= 0.0F) {
-        continue;
+      continue;
     }
     accumulated += c.weight * voxel.color;
     weight_sum += c.weight;
@@ -372,12 +377,12 @@ bool Volume::sample_normal(const Eigen::Vector3f& point,
   return true;
 }
 
-std::uint32_t Volume::pixel_from_color(const Eigen::Vector3f& color) {
+std::uint32_t Volume::pixel_from_color(const Vec3f& color) {
   const auto to_byte = [](float value) {
     return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 255.0F));
   };
-  return to_byte(color.x()) | (to_byte(color.y()) << 8U) |
-         (to_byte(color.z()) << 16U) | (std::uint32_t{255} << 24U);
+  return to_byte(color.x) | (to_byte(color.y) << 8U) |
+         (to_byte(color.z) << 16U) | (std::uint32_t{255} << 24U);
 }
 
 }  // namespace kinectfusion

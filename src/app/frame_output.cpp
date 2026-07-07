@@ -36,7 +36,8 @@ void write_raycast_point_cloud(const kinectfusion::SurfaceMaps& maps,
 
   std::size_t vertex_count = 0;
   for (std::size_t i = 0; i < points.size(); ++i) {
-    if (points.at(i).allFinite() && normals.at(i).allFinite()) {
+    if (kinectfusion::all_finite(points.at(i)) &&
+        kinectfusion::all_finite(normals.at(i))) {
       ++vertex_count;
     }
   }
@@ -65,13 +66,14 @@ void write_raycast_point_cloud(const kinectfusion::SurfaceMaps& maps,
   for (std::size_t i = 0; i < points.size(); ++i) {
     const auto& point = points.at(i);
     const auto& normal = normals.at(i);
-    if (!point.allFinite() || !normal.allFinite()) {
+    if (!kinectfusion::all_finite(point) ||
+        !kinectfusion::all_finite(normal)) {
       continue;
     }
 
     const auto color = kinectfusion::rgba_from_pixel(colors.at(i));
-    output << point.x() << ' ' << point.y() << ' ' << point.z() << ' '
-           << normal.x() << ' ' << normal.y() << ' ' << normal.z() << ' '
+    output << point.x << ' ' << point.y << ' ' << point.z << ' ' << normal.x
+           << ' ' << normal.y << ' ' << normal.z << ' '
            << static_cast<int>(color.x()) << ' ' << static_cast<int>(color.y())
            << ' ' << static_cast<int>(color.z()) << '\n';
   }

@@ -5,10 +5,11 @@
 
 namespace app {
 
-Eigen::Vector3f AppOptions::volume_origin() const {
+kinectfusion::Vec3f AppOptions::volume_origin() const {
   const auto resolution = static_cast<float>(volume_resolution);
   const float half_extent = 0.5F * resolution * voxel_size;
-  return Eigen::Vector3f{-half_extent, -half_extent, -volume_camera_margin};
+  return kinectfusion::Vec3f{
+      .x = -half_extent, .y = -half_extent, .z = -volume_camera_margin};
 }
 
 kinectfusion::RaycastOptions AppOptions::raycast_options(

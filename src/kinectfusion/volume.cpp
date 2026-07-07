@@ -1,8 +1,7 @@
-#include <kinectfusion/volume.hpp>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <kinectfusion/volume.hpp>
 #include <limits>
 #include <stdexcept>
 
@@ -30,7 +29,8 @@ void validate_options(const TsdfIntegrationOptions& options) {
 
 void validate_options(const RaycastOptions& options) {
   if (options.intrinsics.fx <= 0.0F || options.intrinsics.fy <= 0.0F) {
-    throw std::invalid_argument("Raycast intrinsics must have positive focal lengths");
+    throw std::invalid_argument(
+        "Raycast intrinsics must have positive focal lengths");
   }
   if (options.width == 0U || options.height == 0U) {
     throw std::invalid_argument("Raycast dimensions must be positive");
@@ -45,13 +45,12 @@ void validate_options(const RaycastOptions& options) {
 
 }  // namespace
 
-void Volume::integrate_depth_image(
-    const image_proc::DepthImage& depth_image,
-    const CameraIntrinsics& intrinsics,
-    const Eigen::Matrix4f& world_to_camera,
-    const TsdfIntegrationOptions& options,
-    const image_proc::ColorImage* color_image,
-    const image_proc::Vector3fImage* normals) {
+void Volume::integrate_depth_image(const image_proc::DepthImage& depth_image,
+                                   const CameraIntrinsics& intrinsics,
+                                   const Eigen::Matrix4f& world_to_camera,
+                                   const TsdfIntegrationOptions& options,
+                                   const image_proc::ColorImage* color_image,
+                                   const image_proc::Vector3fImage* normals) {
   validate_options(options);
   const Eigen::Matrix3f rotation = world_to_camera.block<3, 3>(0, 0);
   const Eigen::Vector3f translation = world_to_camera.block<3, 1>(0, 3);
@@ -63,11 +62,10 @@ void Volume::integrate_depth_image(
     for (size_t y = 0; y < resolution_.y(); ++y) {
       for (size_t x = 0; x < resolution_.x(); ++x) {
         const Eigen::Vector3f center =
-            volume_origin +
-            Eigen::Vector3f{static_cast<float>(x) + 0.5F,
-                            static_cast<float>(y) + 0.5F,
-                            static_cast<float>(z) + 0.5F} *
-                voxel_size_;
+            volume_origin + Eigen::Vector3f{static_cast<float>(x) + 0.5F,
+                                            static_cast<float>(y) + 0.5F,
+                                            static_cast<float>(z) + 0.5F} *
+                                voxel_size_;
         const Eigen::Vector3f camera_point = rotation * center + translation;
         if (camera_point.z() <= 0.0F) {
           continue;
@@ -88,8 +86,8 @@ void Volume::integrate_depth_image(
             surface_depth > options.max_depth) {
           continue;
         }
-        const Eigen::Vector3f ray = intrinsics.back_project({
-            static_cast<float>(px), static_cast<float>(py)}, 1.0F);
+        const Eigen::Vector3f ray = intrinsics.back_project(
+            {static_cast<float>(px), static_cast<float>(py)}, 1.0F);
         const float lambda = ray.norm();
         if (!ray.allFinite() || lambda == 0.0F) {
           continue;
@@ -118,7 +116,8 @@ void Volume::integrate_depth_image(
             // View direction is the (quantised) pixel ray, matching the ray
             // used for the projective TSDF distance above.
             const Eigen::Vector3f view = -ray.normalized();
-            weight *= std::max(0.0F, normal.normalized().dot(view)) / surface_depth;
+            weight *=
+                std::max(0.0F, normal.normalized().dot(view)) / surface_depth;
           }
         }
         if (weight <= 0.0F) {
@@ -131,7 +130,8 @@ void Volume::integrate_depth_image(
             (voxel.distance * voxel.weight + tsdf * weight) / combined;
         voxel.weight = std::min(combined, options.max_weight);
 
-        if (color_image != nullptr && signed_distance <= truncation_distance * 0.5F) {
+        if (color_image != nullptr &&
+            signed_distance <= truncation_distance * 0.5F) {
           const ColorRgba rgba = rgba_from_pixel(color_image->at(
               static_cast<unsigned int>(px), static_cast<unsigned int>(py)));
           const Vec3f observed{.x = static_cast<float>(rgba.x()),
@@ -139,7 +139,9 @@ void Volume::integrate_depth_image(
                                .z = static_cast<float>(rgba.z())};
           ColorVoxel& color_voxel = color_at(x, y, z);
           const float color_combined = color_voxel.weight + weight;
-          color_voxel.color = (color_voxel.color * color_voxel.weight + observed * weight) / color_combined;
+          color_voxel.color =
+              (color_voxel.color * color_voxel.weight + observed * weight) /
+              color_combined;
           color_voxel.weight = std::min(color_combined, options.max_weight);
         }
       }
@@ -159,12 +161,10 @@ SurfaceMaps Volume::raycast(const CameraIntrinsics& intrinsics,
 SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
   validate_options(options);
   SurfaceMaps maps{
-      .points =
-          image_proc::Vector3fImage{options.width, options.height,
-                                    invalid_vector()},
-      .normals =
-          image_proc::Vector3fImage{options.width, options.height,
-                                    invalid_vector()},
+      .points = image_proc::Vector3fImage{options.width, options.height,
+                                          invalid_vector()},
+      .normals = image_proc::Vector3fImage{options.width, options.height,
+                                           invalid_vector()},
       .colors = image_proc::ColorImage{options.width, options.height}};
 
   const Eigen::Matrix3f rotation = options.camera_to_world.block<3, 3>(0, 0);
@@ -233,8 +233,7 @@ SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
 Volume::GridSample Volume::grid_sample(const Eigen::Vector3f& point) const {
   const Eigen::Vector3f volume_origin = to_eigen(origin_);
   const Eigen::Vector3f grid =
-      (point - volume_origin) / voxel_size_ -
-      Eigen::Vector3f::Constant(0.5F);
+      (point - volume_origin) / voxel_size_ - Eigen::Vector3f::Constant(0.5F);
   const int base_x = static_cast<int>(std::floor(grid.x()));
   const int base_y = static_cast<int>(std::floor(grid.y()));
   const int base_z = static_cast<int>(std::floor(grid.z()));
@@ -275,13 +274,13 @@ bool Volume::sample_tsdf_available_corners(const Eigen::Vector3f& point,
   const GridSample sample = grid_sample(point);
   float accumulated = 0.0F;
   float weight_sum = 0.0F;
-  for(Corner& c : trilinear_corners(sample)) {
+  for (Corner& c : trilinear_corners(sample)) {
     if (!in_bounds(c.x, c.y, c.z)) {
-        continue;
+      continue;
     }
     const Voxel& voxel = at(c.x, c.y, c.z);
     if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
-        continue;
+      continue;
     }
     accumulated += c.weight * voxel.distance;
     weight_sum += c.weight;
@@ -308,17 +307,17 @@ bool Volume::sample_tsdf_valid_corners(const Eigen::Vector3f& point,
   const GridSample sample = grid_sample(point);
   float accumulated = 0.0F;
   float weight_sum = 0.0F;
-  for(Corner& c : trilinear_corners(sample)) {
+  for (Corner& c : trilinear_corners(sample)) {
     if (!in_bounds(c.x, c.y, c.z)) {
-        return false;
+      return false;
     }
     const Voxel& voxel = at(c.x, c.y, c.z);
     if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
-        return false;
+      return false;
     }
     accumulated += c.weight * voxel.distance;
     weight_sum += c.weight;
-    }
+  }
   if (weight_sum <= 1.0e-6F) {
     return false;
   }
@@ -330,9 +329,9 @@ bool Volume::sample_color(const Eigen::Vector3f& point, Vec3f& color) const {
   const GridSample sample = grid_sample(point);
   Vec3f accumulated{};
   float weight_sum = 0.0F;
-  for(Corner& c : trilinear_corners(sample)) {
+  for (Corner& c : trilinear_corners(sample)) {
     if (!in_bounds(c.x, c.y, c.z)) {
-        continue;
+      continue;
     }
     const ColorVoxel& voxel = color_at(c.x, c.y, c.z);
     if (voxel.weight <= 0.0F) {

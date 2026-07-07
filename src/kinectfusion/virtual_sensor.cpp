@@ -1,8 +1,6 @@
-#include <kinectfusion/virtual_sensor.hpp>
-
 #include <fstream>
-
 #include <kinectfusion/image_proc/read_png.hpp>
+#include <kinectfusion/virtual_sensor.hpp>
 
 namespace kinectfusion {
 

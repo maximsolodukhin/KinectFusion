@@ -1,8 +1,7 @@
-#include <kinectfusion/depth_processing.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <kinectfusion/depth_processing.hpp>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -91,15 +90,15 @@ std::optional<std::uint16_t> downsample_depth_block(
 
   return static_cast<std::uint16_t>((sum + count / 2U) / count);
 }
- 
+
 }  // namespace
 
 image_proc::Vector3fImage compute_normals_central_differences(
     const image_proc::Vector3fImage& vertices,
     const DepthProcessingOptions& options) {
   validate_options(options);
-  image_proc::Vector3fImage normals{
-      vertices.width(), vertices.height(), invalid_vector()};
+  image_proc::Vector3fImage normals{vertices.width(), vertices.height(),
+                                    invalid_vector()};
   if (vertices.width() < 3U || vertices.height() < 3U) {
     return normals;
   }
@@ -164,8 +163,8 @@ image_proc::DepthImage bilateral_filter_depth(
         }
         const auto y_index = static_cast<unsigned int>(y);
 
-        for (int dx = -options.bilateral_radius;
-             dx <= options.bilateral_radius; ++dx) {
+        for (int dx = -options.bilateral_radius; dx <= options.bilateral_radius;
+             ++dx) {
           const int x = col + dx;
           if (x < 0 || x >= width) {
             continue;
@@ -178,9 +177,9 @@ image_proc::DepthImage bilateral_filter_depth(
           }
           const float depth_difference = sample_meters - center_meters;
           const auto spatial = static_cast<float>(dx * dx + dy * dy);
-          const float weight =
-              std::exp(spatial * spatial_scale +
-                       depth_difference * depth_difference * depth_weight_scale);
+          const float weight = std::exp(spatial * spatial_scale +
+                                        depth_difference * depth_difference *
+                                            depth_weight_scale);
           weighted_sum += weight * static_cast<float>(sample);
           weight_sum += weight;
         }
@@ -216,12 +215,12 @@ image_proc::DepthImage build_depth_pyramid_level(
 }
 
 image_proc::Vector3fImage project_depth_to_vertices(
-    const image_proc::DepthImage& depth_image, const CameraIntrinsics& intrinsics,
-    const Eigen::Matrix4f& camera_pose,
+    const image_proc::DepthImage& depth_image,
+    const CameraIntrinsics& intrinsics, const Eigen::Matrix4f& camera_pose,
     const DepthProcessingOptions& options) {
   validate_options(options);
-  image_proc::Vector3fImage vertices{
-      depth_image.width(), depth_image.height(), invalid_vector()};
+  image_proc::Vector3fImage vertices{depth_image.width(), depth_image.height(),
+                                     invalid_vector()};
   for (std::size_t row = 0; row < depth_image.height(); ++row) {
     for (std::size_t col = 0; col < depth_image.width(); ++col) {
       const auto raw = depth_image.at(col, row);
@@ -231,7 +230,8 @@ image_proc::Vector3fImage project_depth_to_vertices(
       }
       const Eigen::Vector3f camera_point = intrinsics.back_project(
           {static_cast<float>(col), static_cast<float>(row)}, depth);
-      // .homogeneous() makes the camera_point (x,y,z,1) to multiply with the camera pose
+      // .homogeneous() makes the camera_point (x,y,z,1) to multiply with the
+      // camera pose
       const Eigen::Vector3f world_point =
           (camera_pose * camera_point.homogeneous()).head<3>();
       vertices.at(col, row) = from_eigen(world_point);
@@ -241,8 +241,8 @@ image_proc::Vector3fImage project_depth_to_vertices(
 }
 
 std::vector<DepthProcessingLevel> build_surface_pyramid(
-    const image_proc::DepthImage& depth_image, const CameraIntrinsics& intrinsics,
-    const Eigen::Matrix4f& camera_pose,
+    const image_proc::DepthImage& depth_image,
+    const CameraIntrinsics& intrinsics, const Eigen::Matrix4f& camera_pose,
     const DepthProcessingOptions& options) {
   // Each helper below validates `options` itself; validating here too would
   // just repeat the same checks once per pyramid level.
@@ -253,18 +253,17 @@ std::vector<DepthProcessingLevel> build_surface_pyramid(
       break;
     }
     const CameraIntrinsics level_intrinsics = intrinsics.scaled(level);
-    image_proc::Vector3fImage vertices =
-        project_depth_to_vertices(current, level_intrinsics, camera_pose,
-                                  options);
+    image_proc::Vector3fImage vertices = project_depth_to_vertices(
+        current, level_intrinsics, camera_pose, options);
     image_proc::Vector3fImage normals =
         compute_normals_central_differences(vertices, options);
     if (level + 1U < options.levels) {
       pyramid.emplace_back(current, level_intrinsics, std::move(vertices),
-                         std::move(normals));
+                           std::move(normals));
       current = build_depth_pyramid_level(current, options);
     } else {
       pyramid.emplace_back(std::move(current), level_intrinsics,
-                             std::move(vertices), std::move(normals));
+                           std::move(vertices), std::move(normals));
     }
   }
   return pyramid;

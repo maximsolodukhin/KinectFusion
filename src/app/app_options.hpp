@@ -2,11 +2,8 @@
 #define KINECTFUSION_SRC_APP_APP_OPTIONS_HPP
 
 #include <CLI/CLI.hpp>
-
 #include <Eigen/Core>
-
 #include <filesystem>
-
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/virtual_sensor.hpp>

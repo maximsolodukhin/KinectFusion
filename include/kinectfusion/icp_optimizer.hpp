@@ -3,14 +3,12 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <variant>
-
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/volume.hpp>
+#include <variant>
 
 namespace kinectfusion {
 
@@ -40,9 +38,9 @@ struct IcpDiagnostics {
   float update_rotation{};
 };
 
-// The pose is always present (on failure it is the last good pose for the caller
-// to fall back on this frame), so it sits outside the success/error channel, as
-// do the always-available diagnostics.
+// The pose is always present (on failure it is the last good pose for the
+// caller to fall back on this frame), so it sits outside the success/error
+// channel, as do the always-available diagnostics.
 struct IcpOutcome {
   Eigen::Matrix4f pose{Eigen::Matrix4f::Identity()};
   IcpDiagnostics diagnostics{};
@@ -71,17 +69,16 @@ class ProjectiveIcpTracker {
       : options_(options) {}
 
   [[nodiscard]] IcpOutcome estimate_pose(
-      unsigned int iterations,
-      const VertexNormalMaps& live_maps,
-      const SurfaceMaps& model_maps,
-      const CameraIntrinsics& model_intrinsics,
+      unsigned int iterations, const VertexNormalMaps& live_maps,
+      const SurfaceMaps& model_maps, const CameraIntrinsics& model_intrinsics,
       const Eigen::Matrix4f& model_camera_to_world,
       Eigen::Matrix4f initial_camera_to_world) const;
 
  private:
   struct CorrespondenceSet {
     std::size_t count{};
-    Eigen::Matrix<float, 6, 6> normal_matrix{Eigen::Matrix<float, 6, 6>::Zero()};
+    Eigen::Matrix<float, 6, 6> normal_matrix{
+        Eigen::Matrix<float, 6, 6>::Zero()};
     Eigen::Matrix<float, 6, 1> normal_rhs{Eigen::Matrix<float, 6, 1>::Zero()};
     float distance_sum{};
   };
@@ -100,8 +97,7 @@ class ProjectiveIcpTracker {
   };
 
   [[nodiscard]] CorrespondenceSet find_correspondences(
-      const VertexNormalMaps& live_maps,
-      const SurfaceMaps& model_maps,
+      const VertexNormalMaps& live_maps, const SurfaceMaps& model_maps,
       const CameraIntrinsics& model_intrinsics,
       const Eigen::Matrix4f& model_world_to_camera,
       const Eigen::Matrix4f& camera_to_world) const;

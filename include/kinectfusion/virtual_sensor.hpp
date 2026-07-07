@@ -3,11 +3,10 @@
 
 #include <cstddef>
 #include <filesystem>
-#include <string>
-#include <vector>
-
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/util.hpp>
+#include <string>
+#include <vector>
 
 namespace kinectfusion {
 

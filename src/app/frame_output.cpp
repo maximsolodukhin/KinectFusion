@@ -4,12 +4,11 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <stdexcept>
-#include <string>
-
 #include <kinectfusion/image_proc/write_png.hpp>
 #include <kinectfusion/util.hpp>
 #include <kinectfusion/volume.hpp>
+#include <stdexcept>
+#include <string>
 
 #include "app_options.hpp"
 
@@ -66,8 +65,7 @@ void write_raycast_point_cloud(const kinectfusion::SurfaceMaps& maps,
   for (std::size_t i = 0; i < points.size(); ++i) {
     const auto& point = points.at(i);
     const auto& normal = normals.at(i);
-    if (!kinectfusion::all_finite(point) ||
-        !kinectfusion::all_finite(normal)) {
+    if (!kinectfusion::all_finite(point) || !kinectfusion::all_finite(normal)) {
       continue;
     }
 

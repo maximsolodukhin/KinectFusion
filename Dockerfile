@@ -12,11 +12,9 @@ FROM ubuntu:24.04 AS dev
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Ubuntu 24.04's default GCC is 13, which is what we build with. We do pull in
-# Clang 21 (clangd, clang-tidy, clang-format) from apt.llvm.org so IntelliSense
-# and the tidy pass agree with libstdc++ on C++23 concept-gated headers like
-# <expected> (libstdc++'s <expected> is gated on __cpp_concepts >= 202002L,
-# which Clang < 19 doesn't advertise).
+# Pull clangd/clang-tidy/clang-format 22 from apt.llvm.org (Noble ships clang 18):
+# the `.clang-format` in this repo uses options (e.g. `AlignPPAndNotPP`,
+# `Cpp11BracedListStyle: AlignFirstComment`) introduced in clang-format 22.
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -37,18 +35,18 @@ RUN set -eux; \
         > /etc/apt/sources.list.d/kitware.list; \
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg; \
-    echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+    echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
         > /etc/apt/sources.list.d/llvm.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         cmake \
-        clangd-21 \
-        clang-tidy-21 \
-        clang-format-21; \
+        clangd-22 \
+        clang-tidy-22 \
+        clang-format-22; \
     update-alternatives \
-        --install /usr/bin/clangd       clangd       /usr/bin/clangd-21       210 \
-        --slave   /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-21 \
-        --slave   /usr/bin/clang-format clang-format /usr/bin/clang-format-21; \
+        --install /usr/bin/clangd       clangd       /usr/bin/clangd-22       220 \
+        --slave   /usr/bin/clang-tidy   clang-tidy   /usr/bin/clang-tidy-22 \
+        --slave   /usr/bin/clang-format clang-format /usr/bin/clang-format-22; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 

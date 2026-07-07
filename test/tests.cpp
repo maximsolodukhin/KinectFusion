@@ -1,13 +1,12 @@
 #include <algorithm>
 #include <array>
-#include <variant>
-
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/sample_library.hpp>
 #include <kinectfusion/volume.hpp>
+#include <variant>
 
 namespace {
 
@@ -43,11 +42,10 @@ struct SyntheticSurface {
                    kinectfusion::image_proc::Vector3fImage{width, height},
                .normals =
                    kinectfusion::image_proc::Vector3fImage{width, height}},
-      .model = {.points =
-                    kinectfusion::image_proc::Vector3fImage{width, height},
-                .normals =
-                    kinectfusion::image_proc::Vector3fImage{width, height},
-                .colors = kinectfusion::image_proc::ColorImage{width, height}}};
+      .model = {
+          .points = kinectfusion::image_proc::Vector3fImage{width, height},
+          .normals = kinectfusion::image_proc::Vector3fImage{width, height},
+          .colors = kinectfusion::image_proc::ColorImage{width, height}}};
 
   const std::array normal_seeds{
       kinectfusion::Vec3f{.x = 1.0F, .y = 0.0F, .z = 0.0F},
@@ -130,26 +128,23 @@ TEST_CASE("Depth pyramid rejects mixed-depth neighborhoods",
   REQUIRE(level.at(0, 0) == 0);
 }
 
-TEST_CASE("Volume integrates and raycasts a synthetic depth plane", "[volume]") {
+TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
+          "[volume]") {
   constexpr unsigned int width = 16;
   constexpr unsigned int height = 16;
   kinectfusion::image_proc::DepthImage depth{width, height};
   std::ranges::fill(depth.data(), std::uint16_t{5000});
 
-  kinectfusion::Volume volume{
-      kinectfusion::Vector3s{32, 32, 32},
-      0.05F,
-      Eigen::Vector3f{-0.8F, -0.8F, 0.2F},
-      0.05F};
+  kinectfusion::Volume volume{kinectfusion::Vector3s{32, 32, 32}, 0.05F,
+                              Eigen::Vector3f{-0.8F, -0.8F, 0.2F}, 0.05F};
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 20.0F, .fy = 20.0F, .cx = 7.5F, .cy = 7.5F};
-  volume.integrate_depth_image(depth, intrinsics,
-                               Eigen::Matrix4f::Identity());
+  volume.integrate_depth_image(depth, intrinsics, Eigen::Matrix4f::Identity());
 
   REQUIRE(volume.observed_voxel_count() > 0);
 
-  const auto maps = volume.raycast(intrinsics, width, height,
-                                   Eigen::Matrix4f::Identity());
+  const auto maps =
+      volume.raycast(intrinsics, width, height, Eigen::Matrix4f::Identity());
 
   REQUIRE(valid_raycast_pixels(maps) > 0);
 }

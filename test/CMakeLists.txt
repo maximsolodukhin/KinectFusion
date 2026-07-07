@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15...3.23)
 
 project(CmakeConfigPackageTests
   VERSION ${PROJECT_VERSION}
-  LANGUAGES CXX)
+  LANGUAGES CXX CUDA)
 
 # ---- Test as standalone project the exported config package ----
 

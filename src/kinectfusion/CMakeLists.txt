@@ -34,4 +34,14 @@ endif()
 
 # each component adds its sources via target_sources()
 target_sources(kinectfusion PRIVATE depth_processing.cpp icp_optimizer.cpp virtual_sensor.cpp volume.cpp)
+
+add_library(kinectfusion_cuda STATIC cuda/depth_processing.cu)
+target_link_libraries(kinectfusion_cuda PRIVATE kinectfusion::kinectfusion_options
+                                                kinectfusion::kinectfusion_warnings
+                                                PUBLIC Eigen3::Eigen)
+target_include_directories(kinectfusion_cuda PUBLIC
+                           $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+                           $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>)
+set_target_properties(kinectfusion_cuda PROPERTIES CUDA_STANDARD 20)
+target_link_libraries(kinectfusion PRIVATE kinectfusion_cuda)
 add_subdirectory(image_proc)

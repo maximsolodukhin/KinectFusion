@@ -23,7 +23,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 project(
   kinectfusion
   VERSION 0.1.0
-  LANGUAGES CXX C)
+  LANGUAGES CXX C CUDA)
 
 include(cmake/PreventInSourceBuilds.cmake)
 

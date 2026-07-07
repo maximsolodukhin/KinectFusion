@@ -4,10 +4,8 @@
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-
 #include <cstddef>
 #include <cstdint>
-
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/vector.hpp>
 
@@ -25,17 +23,14 @@ struct CameraIntrinsics {
 
   [[nodiscard]] Eigen::Matrix3f matrix() const {
     Eigen::Matrix3f intrinsics = Eigen::Matrix3f::Identity();
-    intrinsics <<   fx, 0.0F,   cx,
-                  0.0F,   fy,   cy,
-                  0.0F, 0.0F, 1.0F;
+    intrinsics << fx, 0.0F, cx, 0.0F, fy, cy, 0.0F, 0.0F, 1.0F;
     return intrinsics;
   }
 
   [[nodiscard]] Eigen::Vector2f project(
       const Eigen::Vector3f& camera_point) const {
-    return Eigen::Vector2f{
-        fx * camera_point.x() / camera_point.z() + cx,
-        fy * camera_point.y() / camera_point.z() + cy};
+    return Eigen::Vector2f{fx * camera_point.x() / camera_point.z() + cx,
+                           fy * camera_point.y() / camera_point.z() + cy};
   }
 
   // Back-projects pixel (x, y) at depth z into a camera-space point.
@@ -49,10 +44,8 @@ struct CameraIntrinsics {
   // resolution (level 0 returns the unscaled intrinsics).
   [[nodiscard]] CameraIntrinsics scaled(unsigned int level) const {
     const float scale = 1.0F / static_cast<float>(1U << level);
-    return CameraIntrinsics{.fx = fx * scale,
-                            .fy = fy * scale,
-                            .cx = cx * scale,
-                            .cy = cy * scale};
+    return CameraIntrinsics{
+        .fx = fx * scale, .fy = fy * scale, .cx = cx * scale, .cy = cy * scale};
   }
 };
 

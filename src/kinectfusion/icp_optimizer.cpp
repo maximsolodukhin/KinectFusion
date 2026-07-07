@@ -1,18 +1,14 @@
-#include <kinectfusion/icp_optimizer.hpp>
-
 #include <Eigen/Eigenvalues>
-
 #include <cmath>
 #include <expected>
+#include <kinectfusion/icp_optimizer.hpp>
 #include <utility>
 
 namespace kinectfusion {
 
 IcpOutcome ProjectiveIcpTracker::estimate_pose(
-    unsigned int iterations,
-    const VertexNormalMaps& live_maps,
-    const SurfaceMaps& model_maps,
-    const CameraIntrinsics& model_intrinsics,
+    unsigned int iterations, const VertexNormalMaps& live_maps,
+    const SurfaceMaps& model_maps, const CameraIntrinsics& model_intrinsics,
     const Eigen::Matrix4f& model_camera_to_world,
     Eigen::Matrix4f initial_camera_to_world) const {
   IcpOutcome outcome{.pose = initial_camera_to_world};
@@ -68,8 +64,8 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
 
     if (increment.update_translation < options_.min_update_translation &&
         increment.update_rotation < options_.min_update_rotation) {
-      outcome.result = IcpSuccess{Converged{increment.update_translation,
-                                            increment.update_rotation}};
+      outcome.result = IcpSuccess{
+          Converged{increment.update_translation, increment.update_rotation}};
       return outcome;
     }
   }
@@ -82,8 +78,7 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
 
 ProjectiveIcpTracker::CorrespondenceSet
 ProjectiveIcpTracker::find_correspondences(
-    const VertexNormalMaps& live_maps,
-    const SurfaceMaps& model_maps,
+    const VertexNormalMaps& live_maps, const SurfaceMaps& model_maps,
     const CameraIntrinsics& model_intrinsics,
     const Eigen::Matrix4f& model_world_to_camera,
     const Eigen::Matrix4f& camera_to_world) const {
@@ -99,8 +94,7 @@ ProjectiveIcpTracker::find_correspondences(
       const Vec3f& live_vertex_sample = live_view.vertices.at(x, y);
       const Vec3f& live_normal_sample = live_view.normals.at(x, y);
 
-      if (!all_finite(live_vertex_sample) ||
-          !all_finite(live_normal_sample)) {
+      if (!all_finite(live_vertex_sample) || !all_finite(live_normal_sample)) {
         continue;
       }
 
@@ -110,7 +104,8 @@ ProjectiveIcpTracker::find_correspondences(
       const Eigen::Vector4f source_in_model_camera =
           model_world_to_camera *
           Eigen::Vector4f{source.x(), source.y(), source.z(), 1.0F};
-      if (!source_in_model_camera.allFinite() || source_in_model_camera.z() <= 0.0F) {
+      if (!source_in_model_camera.allFinite() ||
+          source_in_model_camera.z() <= 0.0F) {
         continue;
       }
 
@@ -135,7 +130,8 @@ ProjectiveIcpTracker::find_correspondences(
 
       const Eigen::Vector3f model_vertex = to_eigen(model_vertex_sample);
       const Eigen::Vector3f model_normal = to_eigen(model_normal_sample);
-      const Eigen::Vector3f source_normal = (rotation * live_normal).normalized();
+      const Eigen::Vector3f source_normal =
+          (rotation * live_normal).normalized();
       const Eigen::Vector3f delta = source - model_vertex;
       const float distance = delta.norm();
       if (distance > options_.max_point_distance) {
@@ -148,7 +144,8 @@ ProjectiveIcpTracker::find_correspondences(
       Eigen::Matrix<float, 6, 1> row;
       row.head<3>() = source.cross(model_normal);
       row.tail<3>() = model_normal;
-      const float point_plane_residual = model_normal.dot(model_vertex - source);
+      const float point_plane_residual =
+          model_normal.dot(model_vertex - source);
       correspondences.normal_matrix += row * row.transpose();
       correspondences.normal_rhs += row * point_plane_residual;
       correspondences.distance_sum += distance;

@@ -146,17 +146,18 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_flag("--write-point-clouds,!--no-write-point-clouds",
                app_options.write_point_clouds,
                "Write raycast point clouds as ASCII PLY files.");
-  app.add_flag("--raycast-tsdf-from-valid-corners,!--no-raycast-tsdf-from-valid-corners",
-               app_options.raycast_tsdf_from_valid_corners,
-               "Interpolate raycast TSDF only from fully valid voxel corners.");
+  app.add_flag(
+      "--raycast-tsdf-from-valid-corners,!--no-raycast-tsdf-from-valid-corners",
+      app_options.raycast_tsdf_from_valid_corners,
+      "Interpolate raycast TSDF only from fully valid voxel corners.");
 }
 
 void validate_options(const AppOptions& app_options) {
   if (app_options.volume_resolution <= 0) {
     throw std::invalid_argument("volume resolution must be positive");
   }
-  const float extent =
-      static_cast<float>(app_options.volume_resolution) * app_options.voxel_size;
+  const float extent = static_cast<float>(app_options.volume_resolution) *
+                       app_options.voxel_size;
   if (app_options.volume_camera_margin < 0.0F ||
       app_options.volume_camera_margin > extent) {
     throw std::invalid_argument(
@@ -184,8 +185,7 @@ void validate_options(const AppOptions& app_options) {
   if (app_options.matching_distance <= 0.0F) {
     throw std::invalid_argument("matching distance must be positive");
   }
-  if (app_options.min_normal_dot < -1.0F ||
-      app_options.min_normal_dot > 1.0F) {
+  if (app_options.min_normal_dot < -1.0F || app_options.min_normal_dot > 1.0F) {
     throw std::invalid_argument("min normal dot must be within [-1, 1]");
   }
   if (app_options.truncation_distance_scale < 0.0F) {

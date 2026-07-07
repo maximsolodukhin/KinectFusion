@@ -2,7 +2,6 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_VECTOR_HPP
 
 #include <Eigen/Core>
-
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -56,8 +55,9 @@ struct Size3 {
   std::size_t z{};
 };
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-make_vec3f(float x, float y, float z) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f make_vec3f(float x,
+                                                                  float y,
+                                                                  float z) {
   return Vec3f{.x = x, .y = y, .z = z};
 }
 
@@ -70,37 +70,37 @@ make_vec3f(float x, float y, float z) {
   return make_vec3f(nan, nan, nan);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator+(const Vec3f lhs, const Vec3f rhs) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator+(
+    const Vec3f lhs, const Vec3f rhs) {
   return make_vec3f(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator-(const Vec3f lhs, const Vec3f rhs) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator-(
+    const Vec3f lhs, const Vec3f rhs) {
   return make_vec3f(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator-(const Vec3f value) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator-(
+    const Vec3f value) {
   return make_vec3f(-value.x, -value.y, -value.z);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator*(const Vec3f value, const float scale) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator*(
+    const Vec3f value, const float scale) {
   return make_vec3f(value.x * scale, value.y * scale, value.z * scale);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator*(const float scale, const Vec3f value) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator*(
+    const float scale, const Vec3f value) {
   return value * scale;
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f
-operator/(const Vec3f value, const float scale) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f operator/(
+    const Vec3f value, const float scale) {
   return make_vec3f(value.x / scale, value.y / scale, value.z / scale);
 }
 
-KINECTFUSION_HOST_DEVICE constexpr Vec3f &operator+=(Vec3f &lhs,
+KINECTFUSION_HOST_DEVICE constexpr Vec3f& operator+=(Vec3f& lhs,
                                                      const Vec3f rhs) {
   lhs.x += rhs.x;
   lhs.y += rhs.y;
@@ -120,8 +120,8 @@ KINECTFUSION_HOST_DEVICE constexpr Vec3f &operator+=(Vec3f &lhs,
                     lhs.x * rhs.y - lhs.y * rhs.x);
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr float
-squared_norm(const Vec3f value) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr float squared_norm(
+    const Vec3f value) {
   return dot(value, value);
 }
 
@@ -129,19 +129,19 @@ squared_norm(const Vec3f value) {
   return std::sqrt(squared_norm(value));
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE inline Vec3f
-normalized(const Vec3f value) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE inline Vec3f normalized(
+    const Vec3f value) {
   const float length = norm(value);
   return length > 0.0F ? value / length : zero_vec3f();
 }
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE inline bool
-all_finite(const Vec3f value) {
+[[nodiscard]] KINECTFUSION_HOST_DEVICE inline bool all_finite(
+    const Vec3f value) {
   return std::isfinite(value.x) && std::isfinite(value.y) &&
          std::isfinite(value.z);
 }
 
-[[nodiscard]] inline Vec3f from_eigen(const Eigen::Vector3f &value) {
+[[nodiscard]] inline Vec3f from_eigen(const Eigen::Vector3f& value) {
   return make_vec3f(value.x(), value.y(), value.z());
 }
 
@@ -149,6 +149,6 @@ all_finite(const Vec3f value) {
   return Eigen::Vector3f{value.x, value.y, value.z};
 }
 
-} // namespace kinectfusion
+}  // namespace kinectfusion
 
 #endif /* KINECTFUSION_INCLUDE_KINECTFUSION_VECTOR_HPP */

@@ -67,8 +67,8 @@ std::optional<std::uint16_t> downsample_depth_block(
 
   for (std::size_t dy = 0; dy < downsample_factor; ++dy) {
     for (std::size_t dx = 0; dx < downsample_factor; ++dx) {
-      const std::uint16_t sample = depth_image.at(col * downsample_factor + dx,
-                                                  row * downsample_factor + dy);
+      const std::uint16_t sample = depth_image.at(
+          (col * downsample_factor) + dx, (row * downsample_factor) + dy);
       if (sample == 0) {
         continue;
       }
@@ -88,7 +88,7 @@ std::optional<std::uint16_t> downsample_depth_block(
     return std::nullopt;
   }
 
-  return static_cast<std::uint16_t>((sum + count / 2U) / count);
+  return static_cast<std::uint16_t>((sum + (count / 2U)) / count);
 }
 
 }  // namespace
@@ -98,7 +98,7 @@ image_proc::Vector3fImage compute_normals_central_differences(
     const DepthProcessingOptions& options) {
   validate_options(options);
   image_proc::Vector3fImage normals{vertices.width(), vertices.height(),
-                                    invalid_vector()};
+                                    invalid_vec3f()};
   if (vertices.width() < 3U || vertices.height() < 3U) {
     return normals;
   }
@@ -176,10 +176,10 @@ image_proc::DepthImage bilateral_filter_depth(
             continue;
           }
           const float depth_difference = sample_meters - center_meters;
-          const auto spatial = static_cast<float>(dx * dx + dy * dy);
-          const float weight = std::exp(spatial * spatial_scale +
-                                        depth_difference * depth_difference *
-                                            depth_weight_scale);
+          const auto spatial = static_cast<float>((dx * dx) + (dy * dy));
+          const float weight = std::exp(
+              (spatial * spatial_scale) +
+              (depth_difference * depth_difference * depth_weight_scale));
           weighted_sum += weight * static_cast<float>(sample);
           weight_sum += weight;
         }
@@ -220,7 +220,7 @@ image_proc::Vector3fImage project_depth_to_vertices(
     const DepthProcessingOptions& options) {
   validate_options(options);
   image_proc::Vector3fImage vertices{depth_image.width(), depth_image.height(),
-                                     invalid_vector()};
+                                     invalid_vec3f()};
   for (std::size_t row = 0; row < depth_image.height(); ++row) {
     for (std::size_t col = 0; col < depth_image.width(); ++col) {
       const auto raw = depth_image.at(col, row);

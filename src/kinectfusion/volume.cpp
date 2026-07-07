@@ -2,11 +2,18 @@
 #include <array>
 #include <cmath>
 #include <kinectfusion/volume.hpp>
-#include <limits>
 #include <stdexcept>
 
 namespace kinectfusion {
 namespace {
+
+// Colour is only fused near the surface, within this fraction of the
+// truncation distance in front of the observed depth.
+constexpr float color_integration_truncation_fraction = 0.5F;
+
+// TSDF weight sums below this are treated as no coverage and cause the
+// interpolation helpers to bail out.
+constexpr float minimum_trilinear_weight_sum = 1.0e-6F;
 
 void validate_options(const TsdfIntegrationOptions& options) {
   if (options.depth_scale <= 0.0F) {
@@ -71,13 +78,14 @@ void Volume::integrate_depth_image(const image_proc::DepthImage& depth_image,
           continue;
         }
         const Eigen::Vector2f pixel = intrinsics.project(camera_point);
-        const int px = static_cast<int>(std::lround(pixel.x()));
-        const int py = static_cast<int>(std::lround(pixel.y()));
-        if (px < 0 || py < 0 || px >= width || py >= height) {
+        const int pixel_x = static_cast<int>(std::lround(pixel.x()));
+        const int pixel_y = static_cast<int>(std::lround(pixel.y()));
+        if (pixel_x < 0 || pixel_y < 0 || pixel_x >= width ||
+            pixel_y >= height) {
           continue;
         }
-        const auto raw = depth_image.at(static_cast<unsigned int>(px),
-                                        static_cast<unsigned int>(py));
+        const auto raw = depth_image.at(static_cast<unsigned int>(pixel_x),
+                                        static_cast<unsigned int>(pixel_y));
         if (raw == 0) {
           continue;
         }
@@ -87,14 +95,14 @@ void Volume::integrate_depth_image(const image_proc::DepthImage& depth_image,
           continue;
         }
         const Eigen::Vector3f ray = intrinsics.back_project(
-            {static_cast<float>(px), static_cast<float>(py)}, 1.0F);
+            {static_cast<float>(pixel_x), static_cast<float>(pixel_y)}, 1.0F);
         const float lambda = ray.norm();
         if (!ray.allFinite() || lambda == 0.0F) {
           continue;
         }
         float signed_distance = surface_depth - camera_point.z();
         if (options.projective_distance) {
-          signed_distance = surface_depth - camera_point.norm() / lambda;
+          signed_distance = surface_depth - (camera_point.norm() / lambda);
         }
         float truncation_distance = truncation_distance_;
         if (options.distance_scaled_truncation) {
@@ -109,8 +117,9 @@ void Volume::integrate_depth_image(const image_proc::DepthImage& depth_image,
 
         float weight = options.observation_weight;
         if (options.view_angle_weighting && normals != nullptr) {
-          const Vec3f& normal_sample = normals->at(
-              static_cast<unsigned int>(px), static_cast<unsigned int>(py));
+          const Vec3f& normal_sample =
+              normals->at(static_cast<unsigned int>(pixel_x),
+                          static_cast<unsigned int>(pixel_y));
           if (all_finite(normal_sample)) {
             const Eigen::Vector3f normal = to_eigen(normal_sample);
             // View direction is the (quantised) pixel ray, matching the ray
@@ -127,13 +136,15 @@ void Volume::integrate_depth_image(const image_proc::DepthImage& depth_image,
         Voxel& voxel = at(x, y, z);
         const float combined = voxel.weight + weight;
         voxel.distance =
-            (voxel.distance * voxel.weight + tsdf * weight) / combined;
+            ((voxel.distance * voxel.weight) + (tsdf * weight)) / combined;
         voxel.weight = std::min(combined, options.max_weight);
 
         if (color_image != nullptr &&
-            signed_distance <= truncation_distance * 0.5F) {
-          const ColorRgba rgba = rgba_from_pixel(color_image->at(
-              static_cast<unsigned int>(px), static_cast<unsigned int>(py)));
+            signed_distance <=
+                truncation_distance * color_integration_truncation_fraction) {
+          const ColorRgba rgba = rgba_from_pixel(
+              color_image->at(static_cast<unsigned int>(pixel_x),
+                              static_cast<unsigned int>(pixel_y)));
           const Vec3f observed{.x = static_cast<float>(rgba.x()),
                                .y = static_cast<float>(rgba.y()),
                                .z = static_cast<float>(rgba.z())};
@@ -162,9 +173,9 @@ SurfaceMaps Volume::raycast(const RaycastOptions& options) const {
   validate_options(options);
   SurfaceMaps maps{
       .points = image_proc::Vector3fImage{options.width, options.height,
-                                          invalid_vector()},
+                                          invalid_vec3f()},
       .normals = image_proc::Vector3fImage{options.width, options.height,
-                                           invalid_vector()},
+                                           invalid_vec3f()},
       .colors = image_proc::ColorImage{options.width, options.height}};
 
   const Eigen::Matrix3f rotation = options.camera_to_world.block<3, 3>(0, 0);
@@ -245,23 +256,32 @@ Volume::GridSample Volume::grid_sample(const Eigen::Vector3f& point) const {
                     .tz = grid.z() - static_cast<float>(base_z)};
 }
 
-float Volume::trilinear_weight(const GridSample& sample, int dx, int dy,
-                               int dz) {
-  const std::array<float, 2> wx = {1.0F - sample.tx, sample.tx};
-  const std::array<float, 2> wy = {1.0F - sample.ty, sample.ty};
-  const std::array<float, 2> wz = {1.0F - sample.tz, sample.tz};
+float Volume::trilinear_weight(const GridSample& sample, int offset_x,
+                               int offset_y, int offset_z) {
+  const std::array<float, 2> weights_x = {1.0F - sample.tx, sample.tx};
+  const std::array<float, 2> weights_y = {1.0F - sample.ty, sample.ty};
+  const std::array<float, 2> weights_z = {1.0F - sample.tz, sample.tz};
 
-  return wx[dx] * wy[dy] * wz[dz];
+  return weights_x.at(static_cast<std::size_t>(offset_x)) *
+         weights_y.at(static_cast<std::size_t>(offset_y)) *
+         weights_z.at(static_cast<std::size_t>(offset_z));
 }
 
-std::array<Corner, 8> Volume::trilinear_corners(const GridSample& s) const {
-  std::array<Corner, 8> out;
-  int i = 0;
-  for (int dz = 0; dz <= 1; ++dz)
-    for (int dy = 0; dy <= 1; ++dy)
-      for (int dx = 0; dx <= 1; ++dx)
-        out[i++] = {s.base_x + dx, s.base_y + dy, s.base_z + dz,
-                    trilinear_weight(s, dx, dy, dz)};
+std::array<Corner, trilinear_corner_count> Volume::trilinear_corners(
+    const GridSample& sample) {
+  std::array<Corner, trilinear_corner_count> out{};
+  std::size_t corner_idx = 0;
+  for (int offset_z = 0; offset_z <= 1; ++offset_z) {
+    for (int offset_y = 0; offset_y <= 1; ++offset_y) {
+      for (int offset_x = 0; offset_x <= 1; ++offset_x) {
+        out.at(corner_idx++) = {
+            .x = sample.base_x + offset_x,
+            .y = sample.base_y + offset_y,
+            .z = sample.base_z + offset_z,
+            .weight = trilinear_weight(sample, offset_x, offset_y, offset_z)};
+      }
+    }
+  }
   return out;
 }
 
@@ -274,18 +294,18 @@ bool Volume::sample_tsdf_available_corners(const Eigen::Vector3f& point,
   const GridSample sample = grid_sample(point);
   float accumulated = 0.0F;
   float weight_sum = 0.0F;
-  for (Corner& c : trilinear_corners(sample)) {
-    if (!in_bounds(c.x, c.y, c.z)) {
+  for (const Corner& corner : trilinear_corners(sample)) {
+    if (!in_bounds(corner.x, corner.y, corner.z)) {
       continue;
     }
-    const Voxel& voxel = at(c.x, c.y, c.z);
+    const Voxel& voxel = at(corner);
     if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
       continue;
     }
-    accumulated += c.weight * voxel.distance;
-    weight_sum += c.weight;
+    accumulated += corner.weight * voxel.distance;
+    weight_sum += corner.weight;
   }
-  if (weight_sum <= 1.0e-6F) {
+  if (weight_sum <= minimum_trilinear_weight_sum) {
     return false;
   }
   distance = accumulated / weight_sum;
@@ -307,18 +327,18 @@ bool Volume::sample_tsdf_valid_corners(const Eigen::Vector3f& point,
   const GridSample sample = grid_sample(point);
   float accumulated = 0.0F;
   float weight_sum = 0.0F;
-  for (Corner& c : trilinear_corners(sample)) {
-    if (!in_bounds(c.x, c.y, c.z)) {
+  for (const Corner& corner : trilinear_corners(sample)) {
+    if (!in_bounds(corner.x, corner.y, corner.z)) {
       return false;
     }
-    const Voxel& voxel = at(c.x, c.y, c.z);
+    const Voxel& voxel = at(corner);
     if (voxel.weight <= 0.0F || !std::isfinite(voxel.distance)) {
       return false;
     }
-    accumulated += c.weight * voxel.distance;
-    weight_sum += c.weight;
+    accumulated += corner.weight * voxel.distance;
+    weight_sum += corner.weight;
   }
-  if (weight_sum <= 1.0e-6F) {
+  if (weight_sum <= minimum_trilinear_weight_sum) {
     return false;
   }
   distance = accumulated / weight_sum;
@@ -329,18 +349,18 @@ bool Volume::sample_color(const Eigen::Vector3f& point, Vec3f& color) const {
   const GridSample sample = grid_sample(point);
   Vec3f accumulated{};
   float weight_sum = 0.0F;
-  for (Corner& c : trilinear_corners(sample)) {
-    if (!in_bounds(c.x, c.y, c.z)) {
+  for (const Corner& corner : trilinear_corners(sample)) {
+    if (!in_bounds(corner.x, corner.y, corner.z)) {
       continue;
     }
-    const ColorVoxel& voxel = color_at(c.x, c.y, c.z);
+    const ColorVoxel& voxel = color_at(corner);
     if (voxel.weight <= 0.0F) {
       continue;
     }
-    accumulated += c.weight * voxel.color;
-    weight_sum += c.weight;
+    accumulated += corner.weight * voxel.color;
+    weight_sum += corner.weight;
   }
-  if (weight_sum <= 1.0e-6F) {
+  if (weight_sum <= minimum_trilinear_weight_sum) {
     return false;
   }
   color = accumulated / weight_sum;
@@ -350,7 +370,7 @@ bool Volume::sample_color(const Eigen::Vector3f& point, Vec3f& color) const {
 bool Volume::sample_normal(const Eigen::Vector3f& point,
                            Eigen::Vector3f& normal,
                            bool tsdf_from_valid_corners) const {
-  const float h = voxel_size_;
+  const float step = voxel_size_;
   float x_plus = 0.0F;
   float x_minus = 0.0F;
   float y_plus = 0.0F;
@@ -358,12 +378,18 @@ bool Volume::sample_normal(const Eigen::Vector3f& point,
   float z_plus = 0.0F;
   float z_minus = 0.0F;
   const bool corners = tsdf_from_valid_corners;
-  if (!sample_tsdf(point + Eigen::Vector3f{h, 0.0F, 0.0F}, x_plus, corners) ||
-      !sample_tsdf(point - Eigen::Vector3f{h, 0.0F, 0.0F}, x_minus, corners) ||
-      !sample_tsdf(point + Eigen::Vector3f{0.0F, h, 0.0F}, y_plus, corners) ||
-      !sample_tsdf(point - Eigen::Vector3f{0.0F, h, 0.0F}, y_minus, corners) ||
-      !sample_tsdf(point + Eigen::Vector3f{0.0F, 0.0F, h}, z_plus, corners) ||
-      !sample_tsdf(point - Eigen::Vector3f{0.0F, 0.0F, h}, z_minus, corners)) {
+  if (!sample_tsdf(point + Eigen::Vector3f{step, 0.0F, 0.0F}, x_plus,
+                   corners) ||
+      !sample_tsdf(point - Eigen::Vector3f{step, 0.0F, 0.0F}, x_minus,
+                   corners) ||
+      !sample_tsdf(point + Eigen::Vector3f{0.0F, step, 0.0F}, y_plus,
+                   corners) ||
+      !sample_tsdf(point - Eigen::Vector3f{0.0F, step, 0.0F}, y_minus,
+                   corners) ||
+      !sample_tsdf(point + Eigen::Vector3f{0.0F, 0.0F, step}, z_plus,
+                   corners) ||
+      !sample_tsdf(point - Eigen::Vector3f{0.0F, 0.0F, step}, z_minus,
+                   corners)) {
     return false;
   }
   normal =
@@ -378,10 +404,12 @@ bool Volume::sample_normal(const Eigen::Vector3f& point,
 
 std::uint32_t Volume::pixel_from_color(const Vec3f& color) {
   const auto to_byte = [](float value) {
-    return static_cast<std::uint32_t>(std::clamp(value, 0.0F, 255.0F));
+    return static_cast<std::uint32_t>(
+        std::clamp(value, 0.0F, max_color_channel_value_f));
   };
-  return to_byte(color.x) | (to_byte(color.y) << 8U) |
-         (to_byte(color.z) << 16U) | (std::uint32_t{255} << 24U);
+  return to_byte(color.x) | (to_byte(color.y) << color_green_shift) |
+         (to_byte(color.z) << color_blue_shift) |
+         (std::uint32_t{max_color_channel_value} << color_alpha_shift);
 }
 
 }  // namespace kinectfusion

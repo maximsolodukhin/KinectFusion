@@ -5,11 +5,11 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/image_proc/image.hpp>
-#include <kinectfusion/util.hpp>
+#include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/vector.hpp>
 #include <type_traits>
 #include <vector>
 
@@ -29,6 +29,18 @@ struct ColorVoxel {
   Vec3f color{};
   float weight{0.0F};
 };
+
+// A voxel cube has eight corners; used both as the trilinear stencil size
+// and for the `Corner` arrays returned by `Volume::trilinear_corners`.
+inline constexpr std::size_t trilinear_corner_count = 8;
+
+// Defaults for the TSDF integration and raycast options structs below. Kept
+// here so callers can refer to them by name instead of copying the literals.
+inline constexpr float default_tum_depth_scale = 5000.0F;
+inline constexpr float default_tsdf_max_weight = 196.0F;
+inline constexpr float default_min_depth_meters = 0.4F;
+inline constexpr float default_max_depth_meters = 8.0F;
+inline constexpr float default_truncation_distance_scale = 0.01F;
 
 struct SurfaceMaps {
   image_proc::Vector3fImage points;
@@ -72,14 +84,14 @@ using ConstDeviceSurfaceMapsView = ConstSurfaceMapsView<MemorySpace::Device>;
 }
 
 struct TsdfIntegrationOptions {
-  float depth_scale{5000.0F};
+  float depth_scale{default_tum_depth_scale};
   float observation_weight{1.0F};
-  float max_weight{196.0F};
-  float min_depth{0.4F};
-  float max_depth{8.0F};
+  float max_weight{default_tsdf_max_weight};
+  float min_depth{default_min_depth_meters};
+  float max_depth{default_max_depth_meters};
   bool projective_distance{true};
   bool distance_scaled_truncation{false};
-  float truncation_distance_scale{0.01F};
+  float truncation_distance_scale{default_truncation_distance_scale};
   bool view_angle_weighting{true};
 };
 
@@ -88,8 +100,8 @@ struct RaycastOptions {
   std::size_t width{};
   std::size_t height{};
   Eigen::Matrix4f camera_to_world{Eigen::Matrix4f::Identity()};
-  float min_depth{0.4F};
-  float max_depth{8.0F};
+  float min_depth{default_min_depth_meters};
+  float max_depth{default_max_depth_meters};
   float step_scale{1.0F};
   bool tsdf_from_valid_corners{false};
 };
@@ -107,7 +119,7 @@ struct VolumeView {
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
       std::size_t x, std::size_t y, std::size_t z) const {
-    return (z * resolution.y + y) * resolution.x + x;
+    return (((z * resolution.y) + y) * resolution.x) + x;
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Voxel& voxel_at(std::size_t x,
@@ -136,7 +148,7 @@ struct ConstVolumeView {
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
       std::size_t x, std::size_t y, std::size_t z) const {
-    return (z * resolution.y + y) * resolution.x + x;
+    return (((z * resolution.y) + y) * resolution.x) + x;
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE const Voxel& voxel_at(
@@ -251,7 +263,7 @@ class Volume {
 
   [[nodiscard]] std::size_t index(std::size_t x, std::size_t y,
                                   std::size_t z) const {
-    return (z * resolution_.y() + y) * resolution_.x() + x;
+    return (((z * resolution_.y()) + y) * resolution_.x()) + x;
   }
 
   template <typename Scalar>
@@ -277,6 +289,20 @@ class Volume {
                                 std::size_t z) const {
     return voxels_[index(x, y, z)];
   }
+  // Corner-taking overloads. Corners carry signed grid coordinates because
+  // they may be one-past-the-edge during trilinear sampling; the callers of
+  // these overloads guard with `in_bounds` first, so the cast to unsigned is
+  // well-defined here.
+  [[nodiscard]] Voxel& at(const Corner& corner) {
+    return at(static_cast<std::size_t>(corner.x),
+              static_cast<std::size_t>(corner.y),
+              static_cast<std::size_t>(corner.z));
+  }
+  [[nodiscard]] const Voxel& at(const Corner& corner) const {
+    return at(static_cast<std::size_t>(corner.x),
+              static_cast<std::size_t>(corner.y),
+              static_cast<std::size_t>(corner.z));
+  }
   [[nodiscard]] ColorVoxel& color_at(std::size_t x, std::size_t y,
                                      std::size_t z) {
     return colors_[index(x, y, z)];
@@ -285,14 +311,25 @@ class Volume {
                                            std::size_t z) const {
     return colors_[index(x, y, z)];
   }
+  [[nodiscard]] ColorVoxel& color_at(const Corner& corner) {
+    return color_at(static_cast<std::size_t>(corner.x),
+                    static_cast<std::size_t>(corner.y),
+                    static_cast<std::size_t>(corner.z));
+  }
+  [[nodiscard]] const ColorVoxel& color_at(const Corner& corner) const {
+    return color_at(static_cast<std::size_t>(corner.x),
+                    static_cast<std::size_t>(corner.y),
+                    static_cast<std::size_t>(corner.z));
+  }
 
   [[nodiscard]] GridSample grid_sample(const Eigen::Vector3f& point) const;
 
-  [[nodiscard]] static float trilinear_weight(const GridSample& sample, int dx,
-                                              int dy, int dz);
+  [[nodiscard]] static float trilinear_weight(const GridSample& sample,
+                                              int offset_x, int offset_y,
+                                              int offset_z);
 
-  [[nodiscard]] std::array<Corner, 8> trilinear_corners(
-      const GridSample& s) const;
+  [[nodiscard]] static std::array<Corner, trilinear_corner_count>
+  trilinear_corners(const GridSample& sample);
 
   // Trilinear TSDF interpolation from whatever corners are valid, reweighting
   // to skip missing/uninitialised ones.

@@ -114,8 +114,8 @@ Renders land in `./outputs` on the host. Notes:
   writable by that uid.
 - The dataset path passed to the binary (`/data`) is the path **inside** the
   container, i.e. the mount target — not the host path.
-- See `docker compose run --rm kinectfusion --help`, or the
-  [Options](#options) table above, for the full flag list.
+- See `docker compose run --rm kinectfusion --help`, or the [Options](#options)
+  table above, for the full flag list.
 
 ## Development
 

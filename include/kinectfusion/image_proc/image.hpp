@@ -16,14 +16,21 @@ struct ImageView {
 
   static constexpr MemorySpace memory_space = Space;
 
+  // ImageView deliberately holds a raw pointer so it can be passed to CUDA
+  // kernels. Subscripting a raw pointer here is unavoidable,
+  // hence the NOLINTs on the two lookup expressions below.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE PixelT& at(std::size_t x,
                                                     std::size_t y) {
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return data[(y * width) + x];
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE const PixelT& at(std::size_t x,
                                                           std::size_t y) const {
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return data[(y * width) + x];
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
   }
 };
 

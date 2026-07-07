@@ -1,10 +1,9 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_VIRTUAL_SENSOR_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_VIRTUAL_SENSOR_HPP
 
-#include <cstddef>
 #include <filesystem>
 #include <kinectfusion/image_proc/image.hpp>
-#include <kinectfusion/util.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <string>
 #include <vector>
 

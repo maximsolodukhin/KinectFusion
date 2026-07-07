@@ -55,6 +55,8 @@ struct Size3 {
   std::size_t z{};
 };
 
+using Vector3s = Eigen::Matrix<std::size_t, 3, 1>;
+
 [[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f make_vec3f(float x,
                                                                   float y,
                                                                   float z) {
@@ -110,14 +112,14 @@ KINECTFUSION_HOST_DEVICE constexpr Vec3f& operator+=(Vec3f& lhs,
 
 [[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr float dot(const Vec3f lhs,
                                                            const Vec3f rhs) {
-  return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+  return (lhs.x * rhs.x) + (lhs.y * rhs.y) + (lhs.z * rhs.z);
 }
 
 [[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f cross(const Vec3f lhs,
                                                              const Vec3f rhs) {
-  return make_vec3f(lhs.y * rhs.z - lhs.z * rhs.y,
-                    lhs.z * rhs.x - lhs.x * rhs.z,
-                    lhs.x * rhs.y - lhs.y * rhs.x);
+  return make_vec3f((lhs.y * rhs.z) - (lhs.z * rhs.y),
+                    (lhs.z * rhs.x) - (lhs.x * rhs.z),
+                    (lhs.x * rhs.y) - (lhs.y * rhs.x));
 }
 
 [[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr float squared_norm(

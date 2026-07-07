@@ -1,19 +1,23 @@
-#ifndef KINECTFUSION_INCLUDE_KINECTFUSION_UTIL_HPP
-#define KINECTFUSION_INCLUDE_KINECTFUSION_UTIL_HPP
+#ifndef KINECTFUSION_INCLUDE_KINECTFUSION_RGBD_HPP
+#define KINECTFUSION_INCLUDE_KINECTFUSION_RGBD_HPP
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
-#include <cstddef>
 #include <cstdint>
-#include <kinectfusion/image_proc/image.hpp>
-#include <kinectfusion/vector.hpp>
 
 namespace kinectfusion {
 
-using Vector3s = Eigen::Matrix<size_t, 3, 1>;
-
 using ColorRgba = Eigen::Vector<std::uint8_t, 4>;
+
+inline constexpr std::uint32_t color_channel_mask =
+    0xFFU;  // select lowest 8 bits
+inline constexpr std::uint32_t max_color_channel_value = 0xFFU;
+inline constexpr float max_color_channel_value_f = 255.0F;
+inline constexpr unsigned int color_red_shift = 0U;     // bits 0 - 7
+inline constexpr unsigned int color_green_shift = 8U;   // bits 8 - 15
+inline constexpr unsigned int color_blue_shift = 16U;   // bits 16 - 23
+inline constexpr unsigned int color_alpha_shift = 24U;  // bits 24 - 31
 
 struct CameraIntrinsics {
   float fx{};
@@ -29,8 +33,8 @@ struct CameraIntrinsics {
 
   [[nodiscard]] Eigen::Vector2f project(
       const Eigen::Vector3f& camera_point) const {
-    return Eigen::Vector2f{fx * camera_point.x() / camera_point.z() + cx,
-                           fy * camera_point.y() / camera_point.z() + cy};
+    return Eigen::Vector2f{(fx * camera_point.x() / camera_point.z()) + cx,
+                           (fy * camera_point.y() / camera_point.z()) + cy};
   }
 
   // Back-projects pixel (x, y) at depth z into a camera-space point.
@@ -49,8 +53,6 @@ struct CameraIntrinsics {
   }
 };
 
-[[nodiscard]] inline Vec3f invalid_vector() { return invalid_vec3f(); }
-
 [[nodiscard]] inline Eigen::Matrix4f make_transform_matrix(
     const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {
   Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
@@ -61,10 +63,14 @@ struct CameraIntrinsics {
 
 // Unpacks an RGBA8 pixel (as stored by image_proc::ColorImage) into bytes.
 [[nodiscard]] inline ColorRgba rgba_from_pixel(std::uint32_t pixel) {
-  return ColorRgba{static_cast<std::uint8_t>(pixel & 0xFFU),
-                   static_cast<std::uint8_t>((pixel >> 8U) & 0xFFU),
-                   static_cast<std::uint8_t>((pixel >> 16U) & 0xFFU),
-                   static_cast<std::uint8_t>((pixel >> 24U) & 0xFFU)};
+  return ColorRgba{static_cast<std::uint8_t>((pixel >> color_red_shift) &
+                                             color_channel_mask),
+                   static_cast<std::uint8_t>((pixel >> color_green_shift) &
+                                             color_channel_mask),
+                   static_cast<std::uint8_t>((pixel >> color_blue_shift) &
+                                             color_channel_mask),
+                   static_cast<std::uint8_t>((pixel >> color_alpha_shift) &
+                                             color_channel_mask)};
 }
 
 [[nodiscard]] inline float depth_to_meters(std::uint16_t depth,
@@ -74,4 +80,4 @@ struct CameraIntrinsics {
 
 }  // namespace kinectfusion
 
-#endif /* KINECTFUSION_INCLUDE_KINECTFUSION_UTIL_HPP */
+#endif /* KINECTFUSION_INCLUDE_KINECTFUSION_RGBD_HPP */

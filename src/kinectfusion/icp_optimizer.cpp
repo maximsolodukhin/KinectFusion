@@ -5,6 +5,13 @@
 #include <utility>
 
 namespace kinectfusion {
+namespace {
+
+// Below this rotation magnitude the incremental rotation is treated as the
+// identity to keep the axis direction well-defined when normalising by angle.
+constexpr float minimum_rotation_angle = 1.0e-12F;
+
+}  // namespace
 
 IcpOutcome ProjectiveIcpTracker::estimate_pose(
     unsigned int iterations, const VertexNormalMaps& live_maps,
@@ -65,7 +72,8 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
     if (increment.update_translation < options_.min_update_translation &&
         increment.update_rotation < options_.min_update_rotation) {
       outcome.result = IcpSuccess{
-          Converged{increment.update_translation, increment.update_rotation}};
+          Converged{.update_translation = increment.update_translation,
+                    .update_rotation = increment.update_rotation}};
       return outcome;
     }
   }
@@ -114,8 +122,8 @@ ProjectiveIcpTracker::find_correspondences(
       const auto model_x = static_cast<int>(std::lround(pixel.x()));
       const auto model_y = static_cast<int>(std::lround(pixel.y()));
       if (model_x < 0 || model_y < 0 ||
-          static_cast<std::size_t>(model_x) >= model_view.points.width ||
-          static_cast<std::size_t>(model_y) >= model_view.points.height) {
+          std::cmp_greater_equal(model_x, model_view.points.width) ||
+          std::cmp_greater_equal(model_y, model_view.points.height)) {
         continue;
       }
 
@@ -141,7 +149,7 @@ ProjectiveIcpTracker::find_correspondences(
         continue;
       }
 
-      Eigen::Matrix<float, 6, 1> row;
+      Eigen::Matrix<float, icp_dof, 1> row;
       row.head<3>() = source.cross(model_normal);
       row.tail<3>() = model_normal;
       const float point_plane_residual =
@@ -163,8 +171,8 @@ ProjectiveIcpTracker::check_system_stability(
     return {};
   }
 
-  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, 6, 6>> solver{
-      correspondences.normal_matrix};
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<float, icp_dof, icp_dof>>
+      solver{correspondences.normal_matrix};
   if (solver.info() != Eigen::Success || !solver.eigenvalues().allFinite()) {
     return {};
   }
@@ -192,7 +200,7 @@ ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
     return increment;
   }
 
-  const Eigen::Matrix<float, 6, 1> solution =
+  const Eigen::Matrix<float, icp_dof, 1> solution =
       correspondences.normal_matrix.ldlt().solve(correspondences.normal_rhs);
   if (!solution.allFinite()) {
     return increment;
@@ -202,7 +210,7 @@ ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
   const Eigen::Vector3f translation = solution.tail<3>();
   const float angle = angle_axis.norm();
   Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
-  if (angle > 1.0e-12F) {
+  if (angle > minimum_rotation_angle) {
     rotation = Eigen::AngleAxisf(angle, angle_axis / angle).toRotationMatrix();
   }
 

@@ -12,6 +12,21 @@
 
 namespace kinectfusion {
 
+// Degrees of freedom of the linearised point-plane ICP system (three rotation
+// + three translation parameters).
+inline constexpr int icp_dof = 6;
+
+inline constexpr std::size_t default_min_icp_correspondences = 64;
+inline constexpr float default_max_icp_point_distance_meters = 0.05F;
+// cos(15 degrees); reject correspondences whose normals disagree by more.
+inline constexpr float default_min_icp_normal_dot = 0.9659258F;
+inline constexpr float default_min_icp_update_translation_meters = 1.0e-5F;
+inline constexpr float default_min_icp_update_rotation_radians = 1.0e-5F;
+inline constexpr float default_max_icp_update_translation_meters = 0.15F;
+inline constexpr float default_max_icp_update_rotation_radians = 0.35F;
+inline constexpr float default_min_icp_system_eigenvalue = 1.0e-6F;
+inline constexpr float default_max_icp_condition_number = 1.0e6F;
+
 enum class IcpFailure : std::uint8_t {
   invalid_input,
   too_few_correspondences,
@@ -51,16 +66,15 @@ struct IcpOutcome {
 // are passed to the tracker once at construction. The per-call iteration budget
 // is not here: it varies by pyramid level and is a parameter of estimate_pose.
 struct ProjectiveIcpOptions {
-  std::size_t min_correspondences{64};
-  float max_point_distance{0.05F};
-  // cos(15 degrees); reject correspondences whose normals disagree by more.
-  float min_normal_dot{0.9659258F};
-  float min_update_translation{1.0e-5F};
-  float min_update_rotation{1.0e-5F};
-  float max_update_translation{0.15F};
-  float max_update_rotation{0.35F};
-  float min_system_eigenvalue{1.0e-6F};
-  float max_condition_number{1.0e6F};
+  std::size_t min_correspondences{default_min_icp_correspondences};
+  float max_point_distance{default_max_icp_point_distance_meters};
+  float min_normal_dot{default_min_icp_normal_dot};
+  float min_update_translation{default_min_icp_update_translation_meters};
+  float min_update_rotation{default_min_icp_update_rotation_radians};
+  float max_update_translation{default_max_icp_update_translation_meters};
+  float max_update_rotation{default_max_icp_update_rotation_radians};
+  float min_system_eigenvalue{default_min_icp_system_eigenvalue};
+  float max_condition_number{default_max_icp_condition_number};
 };
 
 class ProjectiveIcpTracker {
@@ -77,9 +91,10 @@ class ProjectiveIcpTracker {
  private:
   struct CorrespondenceSet {
     std::size_t count{};
-    Eigen::Matrix<float, 6, 6> normal_matrix{
-        Eigen::Matrix<float, 6, 6>::Zero()};
-    Eigen::Matrix<float, 6, 1> normal_rhs{Eigen::Matrix<float, 6, 1>::Zero()};
+    Eigen::Matrix<float, icp_dof, icp_dof> normal_matrix{
+        Eigen::Matrix<float, icp_dof, icp_dof>::Zero()};
+    Eigen::Matrix<float, icp_dof, 1> normal_rhs{
+        Eigen::Matrix<float, icp_dof, 1>::Zero()};
     float distance_sum{};
   };
 

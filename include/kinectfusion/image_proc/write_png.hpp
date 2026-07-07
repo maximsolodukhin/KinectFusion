@@ -1,9 +1,8 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_WRITE_PNG_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_WRITE_PNG_HPP
 
+#include <kinectfusion/image_proc/image.hpp>
 #include <string>
-
-#include "image.hpp"
 
 namespace kinectfusion::image_proc {
 

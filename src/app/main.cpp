@@ -19,7 +19,7 @@ namespace {
 template <typename... Args>
 void log_info([[maybe_unused]] spdlog::format_string_t<Args...> fmt,
               [[maybe_unused]] Args&&... args) {
-#if defined(KINECTFUSION_ENABLE_LOGGING)
+#ifdef KINECTFUSION_ENABLE_LOGGING
   spdlog::info(fmt, std::forward<Args>(args)...);
 #endif
 }
@@ -27,13 +27,13 @@ void log_info([[maybe_unused]] spdlog::format_string_t<Args...> fmt,
 template <typename... Args>
 void log_warn([[maybe_unused]] spdlog::format_string_t<Args...> fmt,
               [[maybe_unused]] Args&&... args) {
-#if defined(KINECTFUSION_ENABLE_LOGGING)
+#ifdef KINECTFUSION_ENABLE_LOGGING
   spdlog::warn(fmt, std::forward<Args>(args)...);
 #endif
 }
 
 void configure_logging() {
-#if defined(KINECTFUSION_ENABLE_LOGGING)
+#ifdef KINECTFUSION_ENABLE_LOGGING
   auto logger = spdlog::stdout_color_mt("kinectfusion");
   logger->set_pattern("[%H:%M:%S] [%^%l%$] %v");
   spdlog::set_default_logger(logger);
@@ -113,7 +113,7 @@ int main(int argc, const char** argv) {
                                 app_options.volume_origin(),
                                 app_options.truncation_distance};
 
-    kinectfusion::ProjectiveIcpTracker tracker{app_options.icp_options()};
+    const kinectfusion::ProjectiveIcpTracker tracker{app_options.icp_options()};
 
     const auto depth_options = app_options.depth_options();
     const auto tsdf_options = app_options.tsdf_options();

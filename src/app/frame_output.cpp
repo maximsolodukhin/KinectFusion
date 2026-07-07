@@ -5,7 +5,7 @@
 #include <format>
 #include <fstream>
 #include <kinectfusion/image_proc/write_png.hpp>
-#include <kinectfusion/util.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/volume.hpp>
 #include <stdexcept>
 #include <string>

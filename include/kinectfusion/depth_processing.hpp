@@ -3,23 +3,33 @@
 
 #include <Eigen/Core>
 #include <kinectfusion/image_proc/image.hpp>
-#include <kinectfusion/util.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <utility>
 #include <vector>
 
 namespace kinectfusion {
 
+inline constexpr unsigned int default_depth_pyramid_levels = 3U;
+inline constexpr float default_depth_processing_depth_scale = 5000.0F;
+inline constexpr float default_depth_processing_min_depth = 0.4F;
+inline constexpr float default_depth_processing_max_depth = 8.0F;
+inline constexpr float default_max_normal_depth_jump_meters = 0.1F;
+inline constexpr float default_max_downsample_depth_jump_meters = 0.1F;
+inline constexpr int default_bilateral_radius_pixels = 2;
+inline constexpr float default_bilateral_spatial_sigma_pixels = 2.0F;
+inline constexpr float default_bilateral_depth_sigma_meters = 0.08F;
+
 struct DepthProcessingOptions {
-  unsigned int levels{3U};
-  float depth_scale{5000.0F};
-  float min_depth{0.4F};
-  float max_depth{8.0F};
-  float max_normal_depth_jump{0.1F};
-  float max_downsample_depth_jump{0.1F};
+  unsigned int levels{default_depth_pyramid_levels};
+  float depth_scale{default_depth_processing_depth_scale};
+  float min_depth{default_depth_processing_min_depth};
+  float max_depth{default_depth_processing_max_depth};
+  float max_normal_depth_jump{default_max_normal_depth_jump_meters};
+  float max_downsample_depth_jump{default_max_downsample_depth_jump_meters};
   bool bilateral_filter{true};
-  int bilateral_radius{2};
-  float bilateral_spatial_sigma{2.0F};
-  float bilateral_depth_sigma{0.08F};
+  int bilateral_radius{default_bilateral_radius_pixels};
+  float bilateral_spatial_sigma{default_bilateral_spatial_sigma_pixels};
+  float bilateral_depth_sigma{default_bilateral_depth_sigma_meters};
 };
 
 struct VertexNormalMaps {

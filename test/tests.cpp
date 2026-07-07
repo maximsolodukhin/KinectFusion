@@ -10,6 +10,30 @@
 
 namespace {
 
+// Fixture depth values in raw TUM units (5000 raw units == 1 meter at the
+// default depth scale).
+constexpr std::uint16_t fixture_depth_1m = 5000;
+constexpr std::uint16_t fixture_depth_1p4m = 7000;
+
+// Synthetic TSDF volume geometry used by the raycast test.
+constexpr std::size_t synthetic_volume_resolution = 32;
+constexpr float synthetic_voxel_size = 0.05F;
+constexpr float synthetic_origin_x = -0.8F;
+constexpr float synthetic_origin_y = -0.8F;
+constexpr float synthetic_origin_z = 0.2F;
+constexpr float synthetic_truncation_distance = 0.05F;
+
+// Tolerances for the ICP convergence tests.
+constexpr float icp_identity_pose_tolerance = 1.0e-5F;
+constexpr float icp_perturbation_pose_tolerance = 1.0e-3F;
+constexpr float icp_perturbation_distance_tolerance = 1.0e-4F;
+
+// Perturbation applied to the initial pose in the recovery test.
+constexpr float icp_perturbation_angle = 0.01F;
+constexpr float icp_perturbation_tx = 0.002F;
+constexpr float icp_perturbation_ty = -0.001F;
+constexpr float icp_perturbation_tz = 0.0015F;
+
 [[nodiscard]] std::uint32_t valid_raycast_pixels(
     const kinectfusion::SurfaceMaps& maps) {
   std::uint32_t count = 0;
@@ -90,7 +114,7 @@ TEST_CASE("Factorials are computed", "[factorial]") {
 TEST_CASE("Depth processing back-projects a flat depth image",
           "[depth_processing]") {
   kinectfusion::image_proc::DepthImage depth{3, 3};
-  std::ranges::fill(depth.data(), std::uint16_t{5000});
+  std::ranges::fill(depth.data(), fixture_depth_1m);
 
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 1.0F, .fy = 1.0F, .cx = 1.0F, .cy = 1.0F};
@@ -116,10 +140,10 @@ TEST_CASE("Depth processing back-projects a flat depth image",
 TEST_CASE("Depth pyramid rejects mixed-depth neighborhoods",
           "[depth_processing]") {
   kinectfusion::image_proc::DepthImage depth{2, 2};
-  depth.at(0, 0) = 5000;
-  depth.at(1, 0) = 7000;
-  depth.at(0, 1) = 5000;
-  depth.at(1, 1) = 5000;
+  depth.at(0, 0) = fixture_depth_1m;
+  depth.at(1, 0) = fixture_depth_1p4m;
+  depth.at(0, 1) = fixture_depth_1m;
+  depth.at(1, 1) = fixture_depth_1m;
 
   const auto level = kinectfusion::build_depth_pyramid_level(depth);
 
@@ -133,10 +157,16 @@ TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
   constexpr unsigned int width = 16;
   constexpr unsigned int height = 16;
   kinectfusion::image_proc::DepthImage depth{width, height};
-  std::ranges::fill(depth.data(), std::uint16_t{5000});
+  std::ranges::fill(depth.data(), fixture_depth_1m);
 
-  kinectfusion::Volume volume{kinectfusion::Vector3s{32, 32, 32}, 0.05F,
-                              Eigen::Vector3f{-0.8F, -0.8F, 0.2F}, 0.05F};
+  kinectfusion::Volume volume{
+      kinectfusion::Vector3s{synthetic_volume_resolution,
+                             synthetic_volume_resolution,
+                             synthetic_volume_resolution},
+      synthetic_voxel_size,
+      Eigen::Vector3f{synthetic_origin_x, synthetic_origin_y,
+                      synthetic_origin_z},
+      synthetic_truncation_distance};
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 20.0F, .fy = 20.0F, .cx = 7.5F, .cy = 7.5F};
   volume.integrate_depth_image(depth, intrinsics, Eigen::Matrix4f::Identity());
@@ -169,9 +199,9 @@ TEST_CASE("Projective ICP converges on identical synthetic maps",
   REQUIRE(std::holds_alternative<kinectfusion::Converged>(*result.result));
   REQUIRE(result.diagnostics.correspondences == 9);
   REQUIRE(result.diagnostics.update_translation ==
-          Catch::Approx(0.0F).margin(1.0e-5F));
+          Catch::Approx(0.0F).margin(icp_identity_pose_tolerance));
   REQUIRE(result.diagnostics.update_rotation ==
-          Catch::Approx(0.0F).margin(1.0e-5F));
+          Catch::Approx(0.0F).margin(icp_identity_pose_tolerance));
 }
 
 TEST_CASE("Projective ICP recovers a small pose perturbation",
@@ -184,8 +214,10 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
   // rotation + translation offset and require it to drive the pose back.
   Eigen::Matrix4f initial = Eigen::Matrix4f::Identity();
   initial.block<3, 3>(0, 0) =
-      Eigen::AngleAxisf(0.01F, Eigen::Vector3f::UnitZ()).toRotationMatrix();
-  initial.block<3, 1>(0, 3) = Eigen::Vector3f{0.002F, -0.001F, 0.0015F};
+      Eigen::AngleAxisf(icp_perturbation_angle, Eigen::Vector3f::UnitZ())
+          .toRotationMatrix();
+  initial.block<3, 1>(0, 3) = Eigen::Vector3f{
+      icp_perturbation_tx, icp_perturbation_ty, icp_perturbation_tz};
 
   const kinectfusion::ProjectiveIcpTracker tracker{
       kinectfusion::ProjectiveIcpOptions{.min_correspondences = 6,
@@ -202,9 +234,9 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
   REQUIRE(result.diagnostics.correspondences == 9);
   // The recovered pose should return to (near) the identity.
   REQUIRE((result.pose - Eigen::Matrix4f::Identity()).norm() ==
-          Catch::Approx(0.0F).margin(1.0e-3F));
+          Catch::Approx(0.0F).margin(icp_perturbation_pose_tolerance));
   REQUIRE(result.diagnostics.mean_point_distance ==
-          Catch::Approx(0.0F).margin(1.0e-4F));
+          Catch::Approx(0.0F).margin(icp_perturbation_distance_tolerance));
 }
 
 TEST_CASE("Projective ICP rejects empty correspondence sets",
@@ -218,10 +250,10 @@ TEST_CASE("Projective ICP rejects empty correspondence sets",
       .points = kinectfusion::image_proc::Vector3fImage{width, height},
       .normals = kinectfusion::image_proc::Vector3fImage{width, height},
       .colors = kinectfusion::image_proc::ColorImage{width, height}};
-  std::ranges::fill(live_maps.vertices.data(), kinectfusion::invalid_vector());
-  std::ranges::fill(live_maps.normals.data(), kinectfusion::invalid_vector());
-  std::ranges::fill(model_maps.points.data(), kinectfusion::invalid_vector());
-  std::ranges::fill(model_maps.normals.data(), kinectfusion::invalid_vector());
+  std::ranges::fill(live_maps.vertices.data(), kinectfusion::invalid_vec3f());
+  std::ranges::fill(live_maps.normals.data(), kinectfusion::invalid_vec3f());
+  std::ranges::fill(model_maps.points.data(), kinectfusion::invalid_vec3f());
+  std::ranges::fill(model_maps.normals.data(), kinectfusion::invalid_vec3f());
 
   const kinectfusion::ProjectiveIcpTracker tracker{
       kinectfusion::ProjectiveIcpOptions{.min_correspondences = 1}};

@@ -4,6 +4,16 @@
 #include <string>
 
 namespace app {
+namespace {
+
+// Default ICP iteration counts per pyramid level when the user has not
+// requested a fixed value. Higher levels use fewer iterations because they
+// operate on coarser pyramid levels with fewer correspondences.
+constexpr unsigned int default_icp_iterations_level_0 = 10U;
+constexpr unsigned int default_icp_iterations_level_1 = 5U;
+constexpr unsigned int default_icp_iterations_level_deep = 4U;
+
+}  // namespace
 
 kinectfusion::Vec3f AppOptions::volume_origin() const {
   const auto resolution = static_cast<float>(volume_resolution);
@@ -66,12 +76,12 @@ unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
     return static_cast<unsigned int>(icp_iterations);
   }
   if (level == 0) {
-    return 10U;
+    return default_icp_iterations_level_0;
   }
   if (level == 1) {
-    return 5U;
+    return default_icp_iterations_level_1;
   }
-  return 4U;
+  return default_icp_iterations_level_deep;
 }
 
 void configure_cli(CLI::App& app, AppOptions& app_options) {

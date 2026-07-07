@@ -3,9 +3,9 @@
 #include <climits>
 #include <cstddef>
 #include <format>
+#include <kinectfusion/image_proc/file.hpp>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/image_proc/read_png.hpp>
-#include <kinectfusion/image_proc/util.hpp>
 #include <memory>
 #include <stdexcept>
 #include <string>

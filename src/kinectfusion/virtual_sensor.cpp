@@ -3,6 +3,15 @@
 #include <kinectfusion/virtual_sensor.hpp>
 
 namespace kinectfusion {
+namespace {
+
+// TUM RGB-D freiburg1 calibrated depth intrinsics.
+constexpr float tum_freiburg1_depth_fx = 517.3F;
+constexpr float tum_freiburg1_depth_fy = 516.5F;
+constexpr float tum_freiburg1_depth_cx = 318.6F;
+constexpr float tum_freiburg1_depth_cy = 255.3F;
+
+}  // namespace
 
 bool VirtualSensor::init(const std::filesystem::path& dataset_dir) {
   base_dir_ = dataset_dir;
@@ -12,9 +21,10 @@ bool VirtualSensor::init(const std::filesystem::path& dataset_dir) {
   if (!read_index(dataset_dir / "rgb.txt", color_files_)) {
     return false;
   }
-  // TUM RGB-D freiburg1 calibrated depth intrinsics.
-  depth_intrinsics_ =
-      CameraIntrinsics{.fx = 517.3F, .fy = 516.5F, .cx = 318.6F, .cy = 255.3F};
+  depth_intrinsics_ = CameraIntrinsics{.fx = tum_freiburg1_depth_fx,
+                                       .fy = tum_freiburg1_depth_fy,
+                                       .cx = tum_freiburg1_depth_cx,
+                                       .cy = tum_freiburg1_depth_cy};
   current_index_ = -1;
   return !depth_files_.empty() && !color_files_.empty();
 }
@@ -24,14 +34,14 @@ bool VirtualSensor::process_next_frame() {
   if (current_index_ < 0) {
     return false;
   }
-  const std::size_t i = static_cast<std::size_t>(current_index_);
-  if (i >= depth_files_.size() || i >= color_files_.size()) {
+  const auto index = static_cast<std::size_t>(current_index_);
+  if (index >= depth_files_.size() || index >= color_files_.size()) {
     return false;
   }
   depth_image_ = image_proc::read_png<image_proc::DepthImage>(
-      (base_dir_ / depth_files_[i]).string());
+      (base_dir_ / depth_files_[index]).string());
   color_image_ = image_proc::read_png<image_proc::ColorImage>(
-      (base_dir_ / color_files_[i]).string());
+      (base_dir_ / color_files_[index]).string());
   return true;
 }
 

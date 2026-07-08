@@ -127,6 +127,12 @@ struct Pixel {
 void Volume::integrate_depth_image(const DepthFrame& frame,
                                    const TsdfIntegrationOptions& options) {
   require(frame.depth != nullptr, "Depth frame requires a depth image");
+  require(frame.depth->width() > 0U && frame.depth->height() > 0U,
+          "Depth frame depth image must be non-empty");
+  require(frame.intrinsics.fx > 0.0F && frame.intrinsics.fy > 0.0F,
+          "Depth frame intrinsics must have positive focal lengths");
+  require(frame.world_to_camera.allFinite(),
+          "Depth frame world_to_camera must be finite");
   validate_options(options);
   const IntegrationContext context{
       .frame = &frame,

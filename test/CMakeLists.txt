@@ -51,7 +51,6 @@ target_link_libraries(
   PRIVATE kinectfusion::kinectfusion_warnings
           kinectfusion::kinectfusion_options
           kinectfusion::kinectfusion
-          kinectfusion::sample_library
           Catch2::Catch2WithMain)
 
 kinectfusion_configure_linker(tests)
@@ -76,56 +75,5 @@ catch_discover_tests(
   .
   OUTPUT_PREFIX
   "unittests."
-  OUTPUT_SUFFIX
-  .xml)
-
-# Add a file containing a set of constexpr tests
-add_executable(constexpr_tests constexpr_tests.cpp)
-target_link_libraries(
-  constexpr_tests
-  PRIVATE kinectfusion::kinectfusion_warnings
-          kinectfusion::kinectfusion_options
-          kinectfusion::sample_library
-          Catch2::Catch2WithMain)
-
-kinectfusion_configure_linker(constexpr_tests)
-
-catch_discover_tests(
-  constexpr_tests
-  TEST_PREFIX
-  "constexpr."
-  REPORTER
-  XML
-  OUTPUT_DIR
-  .
-  OUTPUT_PREFIX
-  "constexpr."
-  OUTPUT_SUFFIX
-  .xml)
-
-# Disable the constexpr portion of the test, and build again this allows us to have an executable that we can debug when
-# things go wrong with the constexpr testing
-add_executable(relaxed_constexpr_tests constexpr_tests.cpp)
-target_link_libraries(
-  relaxed_constexpr_tests
-  PRIVATE kinectfusion::kinectfusion_warnings
-          kinectfusion::kinectfusion_options
-          kinectfusion::sample_library
-          Catch2::Catch2WithMain)
-target_compile_definitions(relaxed_constexpr_tests PRIVATE CATCH_CONFIG_RUNTIME_STATIC_REQUIRE)
-
-kinectfusion_configure_linker(relaxed_constexpr_tests)
-
-
-catch_discover_tests(
-  relaxed_constexpr_tests
-  TEST_PREFIX
-  "relaxed_constexpr."
-  REPORTER
-  XML
-  OUTPUT_DIR
-  .
-  OUTPUT_PREFIX
-  "relaxed_constexpr."
   OUTPUT_SUFFIX
   .xml)

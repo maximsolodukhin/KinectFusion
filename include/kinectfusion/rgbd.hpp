@@ -2,22 +2,29 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_RGBD_HPP
 
 #include <Eigen/Core>
-#include <Eigen/Dense>
-#include <Eigen/Geometry>
+#include <algorithm>
 #include <cstdint>
+#include <kinectfusion/vector.hpp>
+#include <optional>
 
 namespace kinectfusion {
 
 using ColorRgba = Eigen::Vector<std::uint8_t, 4>;
 
-inline constexpr std::uint32_t color_channel_mask =
+// Default TUM RGB-D sensor conventions. Single source of truth shared by
+// depth processing, TSDF fusion, and the app options.
+inline constexpr float kDefaultTumDepthScale = 5000.0F;
+inline constexpr float kDefaultMinDepthMeters = 0.4F;
+inline constexpr float kDefaultMaxDepthMeters = 8.0F;
+
+inline constexpr std::uint32_t kColorChannelMask =
     0xFFU;  // select lowest 8 bits
-inline constexpr std::uint32_t max_color_channel_value = 0xFFU;
-inline constexpr float max_color_channel_value_f = 255.0F;
-inline constexpr unsigned int color_red_shift = 0U;     // bits 0 - 7
-inline constexpr unsigned int color_green_shift = 8U;   // bits 8 - 15
-inline constexpr unsigned int color_blue_shift = 16U;   // bits 16 - 23
-inline constexpr unsigned int color_alpha_shift = 24U;  // bits 24 - 31
+inline constexpr std::uint32_t kMaxColorChannelValue = 0xFFU;
+inline constexpr float kMaxColorChannelValueF = 255.0F;
+inline constexpr unsigned int kColorRedShift = 0U;     // bits 0 - 7
+inline constexpr unsigned int kColorGreenShift = 8U;   // bits 8 - 15
+inline constexpr unsigned int kColorBlueShift = 16U;   // bits 16 - 23
+inline constexpr unsigned int kColorAlphaShift = 24U;  // bits 24 - 31
 
 struct CameraIntrinsics {
   float fx{};
@@ -61,21 +68,49 @@ struct CameraIntrinsics {
   return transform;
 }
 
+// Packs a colour with 0..255 float channels into the RGBA8 pixel layout used
+// by image_proc::ColorImage (alpha fully opaque). Inverse of
+// `rgba_from_pixel` up to channel clamping.
+[[nodiscard]] inline std::uint32_t pixel_from_color(const Vec3f& color) {
+  const auto to_byte = [](float value) {
+    return static_cast<std::uint32_t>(
+        std::clamp(value, 0.0F, kMaxColorChannelValueF));
+  };
+  return to_byte(color.x) | (to_byte(color.y) << kColorGreenShift) |
+         (to_byte(color.z) << kColorBlueShift) |
+         (std::uint32_t{kMaxColorChannelValue} << kColorAlphaShift);
+}
+
 // Unpacks an RGBA8 pixel (as stored by image_proc::ColorImage) into bytes.
 [[nodiscard]] inline ColorRgba rgba_from_pixel(std::uint32_t pixel) {
-  return ColorRgba{static_cast<std::uint8_t>((pixel >> color_red_shift) &
-                                             color_channel_mask),
-                   static_cast<std::uint8_t>((pixel >> color_green_shift) &
-                                             color_channel_mask),
-                   static_cast<std::uint8_t>((pixel >> color_blue_shift) &
-                                             color_channel_mask),
-                   static_cast<std::uint8_t>((pixel >> color_alpha_shift) &
-                                             color_channel_mask)};
+  return ColorRgba{
+      static_cast<std::uint8_t>((pixel >> kColorRedShift) & kColorChannelMask),
+      static_cast<std::uint8_t>((pixel >> kColorGreenShift) &
+                                kColorChannelMask),
+      static_cast<std::uint8_t>((pixel >> kColorBlueShift) & kColorChannelMask),
+      static_cast<std::uint8_t>((pixel >> kColorAlphaShift) &
+                                kColorChannelMask)};
 }
 
 [[nodiscard]] inline float depth_to_meters(std::uint16_t depth,
                                            float depth_scale) {
   return static_cast<float>(depth) / depth_scale;
+}
+
+// Converts a raw sensor sample to meters like `depth_to_meters`, but yields
+// nullopt for missing samples (zero) and depths outside [min_depth, max_depth].
+[[nodiscard]] inline std::optional<float> depth_in_range(std::uint16_t depth,
+                                                         float depth_scale,
+                                                         float min_depth,
+                                                         float max_depth) {
+  if (depth == 0) {
+    return std::nullopt;
+  }
+  const float meters = depth_to_meters(depth, depth_scale);
+  if (meters < min_depth || meters > max_depth) {
+    return std::nullopt;
+  }
+  return meters;
 }
 
 }  // namespace kinectfusion

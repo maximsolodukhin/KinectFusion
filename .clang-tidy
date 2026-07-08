@@ -1,10 +1,16 @@
 ---
 # NewDeleteLeaks: false positive on libc++ std::function copy in CLI11 headers
+# easily-swappable-parameters: too noisy for small numeric helpers here
+# unchecked-container-access: the image/voxel accessors are deliberately
+# unchecked hot-path lookups; their bounds contracts are enforced by callers
+# (corner_index, integration sweep) and documented at each site.
 Checks: "*,
         -abseil-*,
         -altera-*,
         -android-*,
+        -bugprone-easily-swappable-parameters,
         -clang-analyzer-cplusplus.NewDeleteLeaks,
+        -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
         -fuchsia-*,
         -google-*,
         -llvm*,
@@ -20,10 +26,40 @@ Checks: "*,
         -misc-use-internal-linkage
 "
 WarningsAsErrors: ''
-HeaderFilterRegex: ''
+HeaderFilterRegex: '(kinectfusion|src/app)/'
 FormatStyle:     none
 
 CheckOptions:
+  # Google-style constant naming: kCamelCase for anything compile-time.
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.ClassConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassConstantPrefix
+    value: k
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantPrefix
+    value: k
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantPrefix
+    value: k
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ScopedEnumConstantPrefix
+    value: k
+  # 0.5 is ubiquitous honest math (half-cell offsets, Gaussian exponents).
+  - key: cppcoreguidelines-avoid-magic-numbers.IgnoredFloatingPointValues
+    value: '0.5;1.0;100.0'
+  - key: readability-magic-numbers.IgnoredFloatingPointValues
+    value: '0.5;1.0;100.0'
   - key: readability-identifier-length.IgnoredVariableNames
     value: '^[xyz]$'
   - key: readability-identifier-length.IgnoredParameterNames

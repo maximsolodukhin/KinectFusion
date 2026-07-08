@@ -6,8 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
-#if defined(__CUDACC__)
+#ifdef __CUDACC__
 #define KINECTFUSION_HOST_DEVICE __host__ __device__
 #else
 #define KINECTFUSION_HOST_DEVICE
@@ -41,7 +42,7 @@
 
 namespace kinectfusion {
 
-enum class MemorySpace : std::uint8_t { Host, Device };
+enum class MemorySpace : std::uint8_t { kHost, kDevice };
 
 struct Vec3f {
   float x{};
@@ -57,10 +58,19 @@ struct Size3 {
 
 using Vector3s = Eigen::Matrix<std::size_t, 3, 1>;
 
-[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f make_vec3f(float x,
-                                                                  float y,
-                                                                  float z) {
-  return Vec3f{.x = x, .y = y, .z = z};
+[[nodiscard]] inline Size3 to_size3(const Vector3s& value) {
+  return Size3{.x = value.x(), .y = value.y(), .z = value.z()};
+}
+
+// To prevent casts everywhere
+template <typename X, typename Y, typename Z>
+  requires std::is_arithmetic_v<X> && std::is_arithmetic_v<Y> &&
+           std::is_arithmetic_v<Z>
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f make_vec3f(X x, Y y,
+                                                                  Z z) {
+  return Vec3f{.x = static_cast<float>(x),
+               .y = static_cast<float>(y),
+               .z = static_cast<float>(z)};
 }
 
 [[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr Vec3f zero_vec3f() {
@@ -135,6 +145,16 @@ KINECTFUSION_HOST_DEVICE constexpr Vec3f& operator+=(Vec3f& lhs,
     const Vec3f value) {
   const float length = norm(value);
   return length > 0.0F ? value / length : zero_vec3f();
+}
+
+// Weighted average of two samples; the caller guarantees a positive total
+// weight.
+template <typename ValueT>
+[[nodiscard]] KINECTFUSION_HOST_DEVICE constexpr ValueT weighted_average(
+    const ValueT& value, float value_weight, const ValueT& observed,
+    float observed_weight) {
+  return ((value * value_weight) + (observed * observed_weight)) /
+         (value_weight + observed_weight);
 }
 
 [[nodiscard]] KINECTFUSION_HOST_DEVICE inline bool all_finite(

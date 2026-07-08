@@ -8,13 +8,13 @@
 
 namespace kinectfusion::image_proc {
 
-template <typename PixelT, MemorySpace Space = MemorySpace::Host>
+template <typename PixelT, MemorySpace Space = MemorySpace::kHost>
 struct ImageView {
   PixelT* data{};
   std::size_t width{};
   std::size_t height{};
 
-  static constexpr MemorySpace memory_space = Space;
+  static constexpr MemorySpace kMemorySpace = Space;
 
   // ImageView deliberately holds a raw pointer so it can be passed to CUDA
   // kernels. Subscripting a raw pointer here is unavoidable,
@@ -35,10 +35,10 @@ struct ImageView {
 };
 
 template <typename PixelT>
-using HostImageView = ImageView<PixelT, MemorySpace::Host>;
+using HostImageView = ImageView<PixelT, MemorySpace::kHost>;
 
 template <typename PixelT>
-using DeviceImageView = ImageView<PixelT, MemorySpace::Device>;
+using DeviceImageView = ImageView<PixelT, MemorySpace::kDevice>;
 
 template <typename PixelT>
 class Image {

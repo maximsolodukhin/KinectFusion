@@ -6,10 +6,10 @@ namespace kinectfusion {
 namespace {
 
 // TUM RGB-D freiburg1 calibrated depth intrinsics.
-constexpr float tum_freiburg1_depth_fx = 517.3F;
-constexpr float tum_freiburg1_depth_fy = 516.5F;
-constexpr float tum_freiburg1_depth_cx = 318.6F;
-constexpr float tum_freiburg1_depth_cy = 255.3F;
+constexpr float kTumFreiburg1DepthFx = 517.3F;
+constexpr float kTumFreiburg1DepthFy = 516.5F;
+constexpr float kTumFreiburg1DepthCx = 318.6F;
+constexpr float kTumFreiburg1DepthCy = 255.3F;
 
 }  // namespace
 
@@ -21,10 +21,10 @@ bool VirtualSensor::init(const std::filesystem::path& dataset_dir) {
   if (!read_index(dataset_dir / "rgb.txt", color_files_)) {
     return false;
   }
-  depth_intrinsics_ = CameraIntrinsics{.fx = tum_freiburg1_depth_fx,
-                                       .fy = tum_freiburg1_depth_fy,
-                                       .cx = tum_freiburg1_depth_cx,
-                                       .cy = tum_freiburg1_depth_cy};
+  depth_intrinsics_ = CameraIntrinsics{.fx = kTumFreiburg1DepthFx,
+                                       .fy = kTumFreiburg1DepthFy,
+                                       .cx = kTumFreiburg1DepthCx,
+                                       .cy = kTumFreiburg1DepthCy};
   current_index_ = -1;
   return !depth_files_.empty() && !color_files_.empty();
 }

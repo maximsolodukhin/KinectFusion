@@ -19,15 +19,15 @@ struct PngFormat;
 template <>
 struct PngFormat<DepthImage> {
   // exact copy: the file must be 16-bit grayscale, endian mess
-  static constexpr spng_format fmt = SPNG_FMT_PNG;
-  static constexpr bool verbatim = true;
+  static constexpr spng_format kFmt = SPNG_FMT_PNG;
+  static constexpr bool kVerbatim = true;
 };
 
 template <>
 struct PngFormat<ColorImage> {
   // spng converts any input to rgba8
-  static constexpr spng_format fmt = SPNG_FMT_RGBA8;
-  static constexpr bool verbatim = false;
+  static constexpr spng_format kFmt = SPNG_FMT_RGBA8;
+  static constexpr bool kVerbatim = false;
 };
 
 std::string str_of(int error) { return {spng_strerror(error)}; }
@@ -38,7 +38,7 @@ void check(int error, const std::string& what) {
   }
 }
 
-// verbatim decodes copy pixels as-is, so the file itself must be
+// kVerbatim decodes copy pixels as-is, so the file itself must be
 // single-channel with exactly the pixel's bit width
 void ensure_grayscale(const spng_ihdr& ihdr, std::size_t bit_depth,
                       const std::string& filename) {
@@ -53,8 +53,8 @@ void ensure_grayscale(const spng_ihdr& ihdr, std::size_t bit_depth,
 
 template <class T>
 T read_png(const std::string& filename) {
-  constexpr auto fmt = PngFormat<T>::fmt;
-  constexpr auto verbatim = PngFormat<T>::verbatim;
+  constexpr auto kFmt = PngFormat<T>::kFmt;
+  constexpr auto kVerbatim = PngFormat<T>::kVerbatim;
 
   auto png_data = read_file(filename);
   // hacky way to call spng_ctx_free when ctx goes out of scope(self made
@@ -72,24 +72,24 @@ T read_png(const std::string& filename) {
   spng_ihdr ihdr{};
   check(spng_get_ihdr(ctx.get(), &ihdr), "Failed to read PNG header");
 
-  constexpr std::size_t type_size = sizeof(typename T::value_type);
-  if constexpr (verbatim) {
-    ensure_grayscale(ihdr, type_size * CHAR_BIT, filename);
+  constexpr std::size_t kTypeSize = sizeof(typename T::value_type);
+  if constexpr (kVerbatim) {
+    ensure_grayscale(ihdr, kTypeSize * CHAR_BIT, filename);
   }
 
   std::size_t decoded_size = 0;
 
-  check(spng_decoded_image_size(ctx.get(), fmt, &decoded_size),
+  check(spng_decoded_image_size(ctx.get(), kFmt, &decoded_size),
         "Failed to query decoded size");
 
   T image(ihdr.width, ihdr.height);
-  const std::size_t buffer_size = image.data().size() * type_size;
+  const std::size_t buffer_size = image.data().size() * kTypeSize;
   if (decoded_size != buffer_size) {
     throw std::runtime_error("PNG pixel format does not match image type: " +
                              filename);
   }
 
-  check(spng_decode_image(ctx.get(), image.data().data(), buffer_size, fmt, 0),
+  check(spng_decode_image(ctx.get(), image.data().data(), buffer_size, kFmt, 0),
         "Failed to decode PNG data");
 
   return image;

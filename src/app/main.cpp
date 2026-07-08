@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 
 #include <CLI/CLI.hpp>
+#include <Eigen/LU>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -10,6 +11,8 @@
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
@@ -48,32 +51,262 @@ void configure_logging() {
 #endif
 }
 
-// Raycasts the model at a given pyramid level (level 0 is full resolution).
-[[nodiscard]] kinectfusion::SurfaceMaps raycast_level(
-    const kinectfusion::Volume& volume,
-    const kinectfusion::VirtualSensor& sensor,
-    const Eigen::Matrix4f& camera_to_world, const app::AppOptions& app_options,
-    unsigned int level) {
-  return volume.raycast(
-      app_options.raycast_options(sensor, camera_to_world, level));
-}
-
 [[nodiscard]] constexpr std::string_view failure_name(
     kinectfusion::IcpFailure failure) {
   switch (failure) {
-    case kinectfusion::IcpFailure::invalid_input:
-      return "invalid_input";
-    case kinectfusion::IcpFailure::too_few_correspondences:
-      return "too_few_correspondences";
-    case kinectfusion::IcpFailure::unconstrained_system:
-      return "unconstrained_system";
-    case kinectfusion::IcpFailure::solve_failed:
-      return "solve_failed";
-    case kinectfusion::IcpFailure::update_too_large:
-      return "update_too_large";
+    case kinectfusion::IcpFailure::kInvalidInput:
+      return "kInvalidInput";
+    case kinectfusion::IcpFailure::kTooFewCorrespondences:
+      return "kTooFewCorrespondences";
+    case kinectfusion::IcpFailure::kUnconstrainedSystem:
+      return "kUnconstrainedSystem";
+    case kinectfusion::IcpFailure::kSolveFailed:
+      return "kSolveFailed";
+    case kinectfusion::IcpFailure::kUpdateTooLarge:
+      return "kUpdateTooLarge";
   }
   return "unknown";
 }
+
+class Reconstruction {
+ public:
+  explicit Reconstruction(app::AppOptions options)
+      : options_(std::move(options)),
+        volume_(kinectfusion::Vector3s{options_.volume_resolution,
+                                       options_.volume_resolution,
+                                       options_.volume_resolution},
+                options_.voxel_size, options_.volume_origin(),
+                options_.truncation_distance),
+        tracker_{options_.icp_options()},
+        depth_processor_{options_.depth_options()},
+        tsdf_options_(options_.tsdf_options()) {}
+
+  [[nodiscard]] int run() {
+    if (!initialize()) {
+      return EXIT_FAILURE;
+    }
+    while (options_.max_frames < 0 || processed_frames_ < options_.max_frames) {
+      log_info("Loading next frame");
+      if (!sensor_.process_next_frame()) {
+        break;
+      }
+      process_frame();
+    }
+    log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
+             processed_frames_, volume_.observed_voxel_count());
+    return EXIT_SUCCESS;
+  }
+
+ private:
+  using SurfacePyramid = std::vector<kinectfusion::DepthProcessingLevel>;
+
+  [[nodiscard]] bool initialize() {
+    log_info("Opening dataset: {}", options_.dataset_dir.string());
+    if (!sensor_.init(options_.dataset_dir)) {
+      spdlog::error("Failed to initialize dataset: {}",
+                    options_.dataset_dir.string());
+      return false;
+    }
+    log_info("Loading initial frame");
+    if (!sensor_.process_next_frame()) {
+      spdlog::error("Dataset contains no frames");
+      return false;
+    }
+    log_frame_loaded();
+
+    log_info("Frame {}: building surface pyramid (requested levels={})",
+             sensor_.current_frame_index(), options_.depth_options().levels);
+    const auto initial_pyramid = build_pyramid();
+    log_info("Frame {}: built {} pyramid level(s)",
+             sensor_.current_frame_index(), initial_pyramid.size());
+    const auto* initial_normals = initial_pyramid.empty()
+                                      ? nullptr
+                                      : &initial_pyramid.front().maps.normals;
+
+    log_info(
+        "Frame {}: integrating first depth frame into TSDF volume ({}^3 "
+        "voxels)",
+        sensor_.current_frame_index(), options_.volume_resolution);
+    volume_.integrate_depth_image(
+        {.depth = &sensor_.depth_image(),
+         .color = &sensor_.color_image(),
+         .normals = initial_normals,
+         .intrinsics = sensor_.depth_intrinsics(),
+         .world_to_camera = camera_to_world_.inverse()},
+        tsdf_options_);
+
+    log_info("Frame {}: raycasting initialized model",
+             sensor_.current_frame_index());
+    model_maps_ = raycast_model(camera_to_world_, 0);
+    log_info("Frame {}: writing outputs to {}", sensor_.current_frame_index(),
+             options_.output_dir.string());
+    write_outputs(options_, model_maps_, 0);
+
+    log_info("Initialized reconstruction from frame 0: observed voxels={}",
+             volume_.observed_voxel_count());
+    return true;
+  }
+
+  void process_frame() {
+    log_frame_loaded();
+    log_info("Frame {}: building live surface pyramid",
+             sensor_.current_frame_index());
+    const auto live_pyramid = build_pyramid();
+    if (live_pyramid.empty()) {
+      log_warn("Frame {} produced no depth pyramid",
+               sensor_.current_frame_index());
+      return;
+    }
+    log_info("Frame {}: built {} live pyramid level(s)",
+             sensor_.current_frame_index(), live_pyramid.size());
+
+    const auto tracking = track_pose(live_pyramid);
+    if (tracking.result) {
+      integrate_tracked_frame(live_pyramid, tracking);
+    } else {
+      relocalize(tracking);
+    }
+    ++processed_frames_;
+  }
+
+  [[nodiscard]] kinectfusion::IcpOutcome track_pose(
+      const SurfacePyramid& live_pyramid) const {
+    kinectfusion::IcpOutcome tracking;
+    tracking.pose = camera_to_world_;
+    auto tracked_pose = camera_to_world_;
+
+    log_info("Frame {}: tracking pose with projective ICP",
+             sensor_.current_frame_index());
+    for (std::size_t level_index = live_pyramid.size(); level_index-- > 0;) {
+      const auto level = static_cast<unsigned int>(level_index);
+      log_info("Frame {} level {}: raycasting model prediction",
+               sensor_.current_frame_index(), level);
+      const auto level_model_maps = raycast_model(tracked_pose, level);
+      const auto level_intrinsics = sensor_.depth_intrinsics().scaled(level);
+      log_info("Frame {} level {}: running ICP (iterations={})",
+               sensor_.current_frame_index(), level,
+               options_.icp_iterations_for_level(level));
+      tracking = tracker_.estimate_pose(
+          {.live = view(live_pyramid.at(level_index).maps),
+           .model = {.vertices = level_model_maps.points.view(),
+                     .normals = level_model_maps.normals.view()},
+           .model_intrinsics = level_intrinsics,
+           .model_camera_to_world = tracked_pose,
+           .initial_camera_to_world = tracked_pose,
+           .iterations = options_.icp_iterations_for_level(level)});
+      log_info(
+          "Frame {} level {}: ICP result={} correspondences={} "
+          "mean_distance={}",
+          sensor_.current_frame_index(), level,
+          tracking.result ? "accepted" : "rejected",
+          tracking.diagnostics.correspondences,
+          tracking.diagnostics.mean_point_distance);
+      tracked_pose = tracking.pose;
+      if (!tracking.result) {
+        break;
+      }
+    }
+    return tracking;
+  }
+
+  void integrate_tracked_frame(const SurfacePyramid& live_pyramid,
+                               const kinectfusion::IcpOutcome& tracking) {
+    if (relocalizing_) {
+      log_info(
+          "Relocalized at frame {} after {} frame(s): correspondences={} "
+          "mean_distance={}",
+          sensor_.current_frame_index(), relocalization_frames_,
+          tracking.diagnostics.correspondences,
+          tracking.diagnostics.mean_point_distance);
+      relocalizing_ = false;
+      relocalization_frames_ = 0;
+    }
+
+    camera_to_world_ = tracking.pose;
+
+    log_info("Frame {}: integrating tracked depth frame into TSDF volume",
+             sensor_.current_frame_index());
+    volume_.integrate_depth_image(
+        {.depth = &sensor_.depth_image(),
+         .color = &sensor_.color_image(),
+         .normals = &live_pyramid.front().maps.normals,
+         .intrinsics = sensor_.depth_intrinsics(),
+         .world_to_camera = camera_to_world_.inverse()},
+        tsdf_options_);
+
+    log_info("Frame {}: raycasting updated model",
+             sensor_.current_frame_index());
+    model_maps_ = raycast_model(camera_to_world_, 0);
+    log_info("Frame {}: writing outputs to {}", sensor_.current_frame_index(),
+             options_.output_dir.string());
+    write_outputs(options_, model_maps_, sensor_.current_frame_index());
+
+    log_info(
+        "Frame {} integrated: correspondences={} mean_distance={} "
+        "observed_voxels={}",
+        sensor_.current_frame_index(), tracking.diagnostics.correspondences,
+        tracking.diagnostics.mean_point_distance,
+        volume_.observed_voxel_count());
+  }
+
+  void relocalize(const kinectfusion::IcpOutcome& tracking) {
+    if (!relocalizing_) {
+      log_warn("Entering relocalization mode at frame {}",
+               sensor_.current_frame_index());
+    }
+    relocalizing_ = true;
+    ++relocalization_frames_;
+    log_info("Frame {}: raycasting last accepted pose for relocalization",
+             sensor_.current_frame_index());
+    model_maps_ = raycast_model(camera_to_world_, 0);
+    log_warn(
+        "Frame {} tracking rejected: status={} correspondences={} "
+        "mean_distance={} min_eigenvalue={} condition={} "
+        "update_translation={} update_rotation={}",
+        sensor_.current_frame_index(), failure_name(tracking.result.error()),
+        tracking.diagnostics.correspondences,
+        tracking.diagnostics.mean_point_distance,
+        tracking.diagnostics.min_system_eigenvalue,
+        tracking.diagnostics.condition_number,
+        tracking.diagnostics.update_translation,
+        tracking.diagnostics.update_rotation);
+    if (options_.interactive_relocalization) {
+      std::cerr << "Relocalization paused. Align the live sensor with the "
+                   "last model prediction and press Enter.\n";
+      std::cin.get();
+    }
+  }
+
+  [[nodiscard]] SurfacePyramid build_pyramid() const {
+    return depth_processor_.build_surface_pyramid(sensor_.depth_image(),
+                                                  sensor_.depth_intrinsics());
+  }
+
+  [[nodiscard]] kinectfusion::SurfaceMaps raycast_model(
+      const Eigen::Matrix4f& camera_to_world, unsigned int level) const {
+    return volume_.raycast(
+        options_.raycast_options(sensor_, camera_to_world, level));
+  }
+
+  void log_frame_loaded() const {
+    log_info("Frame {} loaded: depth={}x{} color={}x{}",
+             sensor_.current_frame_index(), sensor_.depth_image().width(),
+             sensor_.depth_image().height(), sensor_.color_image().width(),
+             sensor_.color_image().height());
+  }
+
+  app::AppOptions options_;
+  kinectfusion::VirtualSensor sensor_;
+  kinectfusion::Volume volume_;
+  kinectfusion::ProjectiveIcpTracker tracker_;
+  kinectfusion::DepthProcessor depth_processor_;
+  kinectfusion::TsdfIntegrationOptions tsdf_options_;
+  Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
+  kinectfusion::SurfaceMaps model_maps_;
+  int processed_frames_{1};
+  bool relocalizing_{false};
+  int relocalization_frames_{0};
+};
 
 }  // namespace
 
@@ -97,213 +330,8 @@ int main(int argc, const char** argv) {
         app_options.volume_resolution, app_options.voxel_size,
         app_options.truncation_distance);
 
-    // load first frame to sensor
-    kinectfusion::VirtualSensor sensor;
-    log_info("Opening dataset: {}", app_options.dataset_dir.string());
-    if (!sensor.init(app_options.dataset_dir)) {
-      spdlog::error("Failed to initialize dataset: {}",
-                    app_options.dataset_dir.string());
-      return EXIT_FAILURE;
-    }
-
-    const kinectfusion::Vector3s resolution{app_options.volume_resolution,
-                                            app_options.volume_resolution,
-                                            app_options.volume_resolution};
-    kinectfusion::Volume volume{resolution, app_options.voxel_size,
-                                app_options.volume_origin(),
-                                app_options.truncation_distance};
-
-    const kinectfusion::ProjectiveIcpTracker tracker{app_options.icp_options()};
-
-    const auto depth_options = app_options.depth_options();
-    const auto tsdf_options = app_options.tsdf_options();
-
-    // camera position and direction
-    Eigen::Matrix4f camera_to_world = Eigen::Matrix4f::Identity();
-
-    log_info("Loading initial frame");
-    if (!sensor.process_next_frame()) {
-      spdlog::error("Dataset contains no frames");
-      return EXIT_FAILURE;
-    }
-    log_info("Frame {} loaded: depth={}x{} color={}x{}",
-             sensor.current_frame_index(), sensor.depth_image().width(),
-             sensor.depth_image().height(), sensor.color_image().width(),
-             sensor.color_image().height());
-
-    // build pyramids
-    log_info("Frame {}: building surface pyramid (requested levels={})",
-             sensor.current_frame_index(), depth_options.levels);
-    const auto initial_pyramid = kinectfusion::build_surface_pyramid(
-        sensor.depth_image(), sensor.depth_intrinsics(),
-        Eigen::Matrix4f::Identity(), depth_options);
-    log_info("Frame {}: built {} pyramid level(s)",
-             sensor.current_frame_index(), initial_pyramid.size());
-    const auto* initial_normals = initial_pyramid.empty()
-                                      ? nullptr
-                                      : &initial_pyramid.front().maps.normals;
-
-    // integrate first frame into volume
-    log_info(
-        "Frame {}: integrating first depth frame into TSDF volume ({}^3 "
-        "voxels)",
-        sensor.current_frame_index(), app_options.volume_resolution);
-    volume.integrate_depth_image(sensor.depth_image(),
-                                 sensor.depth_intrinsics(),
-                                 camera_to_world.inverse(), tsdf_options,
-                                 &sensor.color_image(), initial_normals);
-
-    // raycast volume and get model surface maps
-    log_info("Frame {}: raycasting initialized model",
-             sensor.current_frame_index());
-    auto model_maps =
-        raycast_level(volume, sensor, camera_to_world, app_options, 0);
-    log_info("Frame {}: writing outputs to {}", sensor.current_frame_index(),
-             app_options.output_dir.string());
-    write_outputs(app_options, model_maps, 0);
-
-    log_info("Initialized reconstruction from frame 0: observed voxels={}",
-             volume.observed_voxel_count());
-
-    int processed_frames = 1;
-    bool relocalizing = false;
-    int relocalization_frames = 0;
-
-    while (app_options.max_frames < 0 ||
-           processed_frames < app_options.max_frames) {
-      // load frame
-      log_info("Loading next frame");
-      if (!sensor.process_next_frame()) {
-        break;
-      }
-      log_info("Frame {} loaded: depth={}x{} color={}x{}",
-               sensor.current_frame_index(), sensor.depth_image().width(),
-               sensor.depth_image().height(), sensor.color_image().width(),
-               sensor.color_image().height());
-
-      // build pyramid
-      log_info("Frame {}: building live surface pyramid",
-               sensor.current_frame_index());
-      const auto live_pyramid = kinectfusion::build_surface_pyramid(
-          sensor.depth_image(), sensor.depth_intrinsics(),
-          Eigen::Matrix4f::Identity(), depth_options);
-      if (live_pyramid.empty()) {
-        log_warn("Frame {} produced no depth pyramid",
-                 sensor.current_frame_index());
-        continue;
-      }
-      log_info("Frame {}: built {} live pyramid level(s)",
-               sensor.current_frame_index(), live_pyramid.size());
-
-      kinectfusion::IcpOutcome tracking;
-      tracking.pose = camera_to_world;
-
-      // tracked_pose is current_camera_pose
-      auto tracked_pose = camera_to_world;
-
-      // for each level: raycast at current pose, run icp -> new tracked pose
-      log_info("Frame {}: tracking pose with projective ICP",
-               sensor.current_frame_index());
-      for (std::size_t level_index = live_pyramid.size(); level_index-- > 0;) {
-        const auto level = static_cast<unsigned int>(level_index);
-        log_info("Frame {} level {}: raycasting model prediction",
-                 sensor.current_frame_index(), level);
-        const auto level_model_maps =
-            raycast_level(volume, sensor, tracked_pose, app_options, level);
-        const auto level_intrinsics = sensor.depth_intrinsics().scaled(level);
-        log_info("Frame {} level {}: running ICP (iterations={})",
-                 sensor.current_frame_index(), level,
-                 app_options.icp_iterations_for_level(level));
-        tracking = tracker.estimate_pose(
-            app_options.icp_iterations_for_level(level),
-            live_pyramid.at(level_index).maps, level_model_maps,
-            level_intrinsics, tracked_pose, tracked_pose);
-        log_info(
-            "Frame {} level {}: ICP result={} correspondences={} "
-            "mean_distance={}",
-            sensor.current_frame_index(), level,
-            tracking.result ? "accepted" : "rejected",
-            tracking.diagnostics.correspondences,
-            tracking.diagnostics.mean_point_distance);
-        tracked_pose = tracking.pose;
-        if (!tracking.result) {
-          break;
-        }
-      }
-
-      if (!tracking.result) {
-        if (!relocalizing) {
-          log_warn("Entering relocalization mode at frame {}",
-                   sensor.current_frame_index());
-        }
-        relocalizing = true;
-        ++relocalization_frames;
-        log_info("Frame {}: raycasting last accepted pose for relocalization",
-                 sensor.current_frame_index());
-        model_maps =
-            raycast_level(volume, sensor, camera_to_world, app_options, 0);
-        log_warn(
-            "Frame {} tracking rejected: status={} correspondences={} "
-            "mean_distance={} min_eigenvalue={} condition={} "
-            "update_translation={} update_rotation={}",
-            sensor.current_frame_index(), failure_name(tracking.result.error()),
-            tracking.diagnostics.correspondences,
-            tracking.diagnostics.mean_point_distance,
-            tracking.diagnostics.min_system_eigenvalue,
-            tracking.diagnostics.condition_number,
-            tracking.diagnostics.update_translation,
-            tracking.diagnostics.update_rotation);
-        if (app_options.interactive_relocalization) {
-          std::cerr << "Relocalization paused. Align the live sensor with the "
-                       "last model prediction and press Enter.\n";
-          std::cin.get();
-        }
-        ++processed_frames;
-        continue;
-      }
-
-      if (relocalizing) {
-        log_info(
-            "Relocalized at frame {} after {} frame(s): correspondences={} "
-            "mean_distance={}",
-            sensor.current_frame_index(), relocalization_frames,
-            tracking.diagnostics.correspondences,
-            tracking.diagnostics.mean_point_distance);
-        relocalizing = false;
-        relocalization_frames = 0;
-      }
-
-      // current_camera_pose = tracked_pose
-      camera_to_world = tracked_pose;
-
-      // integrate current depth frame into volume using new pose
-      log_info("Frame {}: integrating tracked depth frame into TSDF volume",
-               sensor.current_frame_index());
-      volume.integrate_depth_image(
-          sensor.depth_image(), sensor.depth_intrinsics(),
-          camera_to_world.inverse(), tsdf_options, &sensor.color_image(),
-          &live_pyramid.front().maps.normals);
-
-      // raycast volume and get updated surface model maps
-      log_info("Frame {}: raycasting updated model",
-               sensor.current_frame_index());
-      model_maps =
-          raycast_level(volume, sensor, camera_to_world, app_options, 0);
-      log_info("Frame {}: writing outputs to {}", sensor.current_frame_index(),
-               app_options.output_dir.string());
-      write_outputs(app_options, model_maps, sensor.current_frame_index());
-
-      log_info(
-          "Frame {} integrated: correspondences={} mean_distance={} "
-          "observed_voxels={}",
-          sensor.current_frame_index(), tracking.diagnostics.correspondences,
-          tracking.diagnostics.mean_point_distance,
-          volume.observed_voxel_count());
-      ++processed_frames;
-    }
-
-    log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
-             processed_frames, volume.observed_voxel_count());
+    Reconstruction reconstruction{std::move(app_options)};
+    return reconstruction.run();
   } catch (const std::exception& e) {
     try {
       spdlog::error("Unhandled exception in main: {}", e.what());

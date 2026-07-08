@@ -1,6 +1,6 @@
 #include "app_options.hpp"
 
-#include <stdexcept>
+#include <kinectfusion/validation.hpp>
 #include <string>
 
 namespace app {
@@ -9,9 +9,9 @@ namespace {
 // Default ICP iteration counts per pyramid level when the user has not
 // requested a fixed value. Higher levels use fewer iterations because they
 // operate on coarser pyramid levels with fewer correspondences.
-constexpr unsigned int default_icp_iterations_level_0 = 10U;
-constexpr unsigned int default_icp_iterations_level_1 = 5U;
-constexpr unsigned int default_icp_iterations_level_deep = 4U;
+constexpr unsigned int kDefaultIcpIterationsLevel0 = 10U;
+constexpr unsigned int kDefaultIcpIterationsLevel1 = 5U;
+constexpr unsigned int kDefaultIcpIterationsLevelDeep = 4U;
 
 }  // namespace
 
@@ -33,7 +33,9 @@ kinectfusion::RaycastOptions AppOptions::raycast_options(
       .camera_to_world = camera_to_world,
       .min_depth = min_depth,
       .max_depth = max_depth,
-      .tsdf_from_valid_corners = raycast_tsdf_from_valid_corners};
+      .tsdf_corner_policy = raycast_tsdf_from_valid_corners
+                                ? kinectfusion::CornerPolicy::kRequireAll
+                                : kinectfusion::CornerPolicy::kSkipMissing};
 }
 
 kinectfusion::DepthProcessingOptions AppOptions::depth_options() const {
@@ -76,12 +78,12 @@ unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
     return static_cast<unsigned int>(icp_iterations);
   }
   if (level == 0) {
-    return default_icp_iterations_level_0;
+    return kDefaultIcpIterationsLevel0;
   }
   if (level == 1) {
-    return default_icp_iterations_level_1;
+    return kDefaultIcpIterationsLevel1;
   }
-  return default_icp_iterations_level_deep;
+  return kDefaultIcpIterationsLevelDeep;
 }
 
 void configure_cli(CLI::App& app, AppOptions& app_options) {
@@ -163,52 +165,36 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
 }
 
 void validate_options(const AppOptions& app_options) {
-  if (app_options.volume_resolution <= 0) {
-    throw std::invalid_argument("volume resolution must be positive");
-  }
+  using kinectfusion::require;
+  require(app_options.volume_resolution > 0,
+          "volume resolution must be positive");
   const float extent = static_cast<float>(app_options.volume_resolution) *
                        app_options.voxel_size;
-  if (app_options.volume_camera_margin < 0.0F ||
-      app_options.volume_camera_margin > extent) {
-    throw std::invalid_argument(
-        "volume camera margin must be within [0, volume extent]");
-  }
-  if (app_options.voxel_size <= 0.0F) {
-    throw std::invalid_argument("voxel size must be positive");
-  }
-  if (app_options.truncation_distance <= 0.0F) {
-    throw std::invalid_argument("truncation distance must be positive");
-  }
-  if (app_options.depth_scale <= 0.0F) {
-    throw std::invalid_argument("depth scale must be positive");
-  }
-  if (app_options.min_depth < 0.0F ||
-      app_options.max_depth <= app_options.min_depth) {
-    throw std::invalid_argument("depth range is invalid");
-  }
-  if (app_options.pyramid_levels == 0U) {
-    throw std::invalid_argument("pyramid levels must be positive");
-  }
-  if (app_options.icp_iterations == 0 || app_options.icp_iterations < -1) {
-    throw std::invalid_argument("ICP iterations must be positive or -1");
-  }
-  if (app_options.matching_distance <= 0.0F) {
-    throw std::invalid_argument("matching distance must be positive");
-  }
-  if (app_options.min_normal_dot < -1.0F || app_options.min_normal_dot > 1.0F) {
-    throw std::invalid_argument("min normal dot must be within [-1, 1]");
-  }
-  if (app_options.truncation_distance_scale < 0.0F) {
-    throw std::invalid_argument(
-        "truncation distance scale must be non-negative");
-  }
-  if (app_options.bilateral_radius < 0) {
-    throw std::invalid_argument("bilateral radius must be non-negative");
-  }
-  if (app_options.bilateral_spatial_sigma <= 0.0F ||
-      app_options.bilateral_depth_sigma <= 0.0F) {
-    throw std::invalid_argument("bilateral sigmas must be positive");
-  }
+  require(app_options.volume_camera_margin >= 0.0F &&
+              app_options.volume_camera_margin <= extent,
+          "volume camera margin must be within [0, volume extent]");
+  require(app_options.voxel_size > 0.0F, "voxel size must be positive");
+  require(app_options.truncation_distance > 0.0F,
+          "truncation distance must be positive");
+  require(app_options.depth_scale > 0.0F, "depth scale must be positive");
+  require(app_options.min_depth >= 0.0F &&
+              app_options.max_depth > app_options.min_depth,
+          "depth range is invalid");
+  require(app_options.pyramid_levels > 0U, "pyramid levels must be positive");
+  require(app_options.icp_iterations > 0 || app_options.icp_iterations == -1,
+          "ICP iterations must be positive or -1");
+  require(app_options.matching_distance > 0.0F,
+          "matching distance must be positive");
+  require(
+      app_options.min_normal_dot >= -1.0F && app_options.min_normal_dot <= 1.0F,
+      "min normal dot must be within [-1, 1]");
+  require(app_options.truncation_distance_scale >= 0.0F,
+          "truncation distance scale must be non-negative");
+  require(app_options.bilateral_radius >= 0,
+          "bilateral radius must be non-negative");
+  require(app_options.bilateral_spatial_sigma > 0.0F &&
+              app_options.bilateral_depth_sigma > 0.0F,
+          "bilateral sigmas must be positive");
 }
 
 }  // namespace app

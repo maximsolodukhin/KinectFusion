@@ -14,7 +14,7 @@
 namespace kinectfusion::image_proc {
 namespace {
 
-constexpr std::uint8_t png_bit_depth = 8;
+constexpr std::uint8_t kPngBitDepth = 8;
 
 void check(int error, const std::string& what) {
   if (error != SPNG_OK) {
@@ -38,7 +38,7 @@ void write_png(const ColorImage& image, const std::string& filename) {
   spng_ihdr ihdr{};
   ihdr.width = static_cast<std::uint32_t>(image.width());
   ihdr.height = static_cast<std::uint32_t>(image.height());
-  ihdr.bit_depth = png_bit_depth;
+  ihdr.bit_depth = kPngBitDepth;
   ihdr.color_type = static_cast<std::uint8_t>(SPNG_COLOR_TYPE_TRUECOLOR_ALPHA);
   check(spng_set_ihdr(ctx.get(), &ihdr), "Failed to set PNG header");
 

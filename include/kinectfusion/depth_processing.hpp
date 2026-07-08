@@ -2,34 +2,36 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_DEPTH_PROCESSING_HPP
 
 #include <Eigen/Core>
+#include <cstdint>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/rgbd.hpp>
+#include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace kinectfusion {
 
-inline constexpr unsigned int default_depth_pyramid_levels = 3U;
-inline constexpr float default_depth_processing_depth_scale = 5000.0F;
-inline constexpr float default_depth_processing_min_depth = 0.4F;
-inline constexpr float default_depth_processing_max_depth = 8.0F;
-inline constexpr float default_max_normal_depth_jump_meters = 0.1F;
-inline constexpr float default_max_downsample_depth_jump_meters = 0.1F;
-inline constexpr int default_bilateral_radius_pixels = 2;
-inline constexpr float default_bilateral_spatial_sigma_pixels = 2.0F;
-inline constexpr float default_bilateral_depth_sigma_meters = 0.08F;
+// Depth scale and range defaults are the shared sensor conventions in
+// rgbd.hpp (kDefaultTumDepthScale, kDefaultMin/MaxDepthMeters).
+inline constexpr unsigned int kDefaultDepthPyramidLevels = 3U;
+inline constexpr float kDefaultMaxNormalDepthJumpMeters = 0.1F;
+inline constexpr float kDefaultMaxDownsampleDepthJumpMeters = 0.1F;
+inline constexpr int kDefaultBilateralRadiusPixels = 2;
+inline constexpr float kDefaultBilateralSpatialSigmaPixels = 2.0F;
+inline constexpr float kDefaultBilateralDepthSigmaMeters = 0.08F;
 
 struct DepthProcessingOptions {
-  unsigned int levels{default_depth_pyramid_levels};
-  float depth_scale{default_depth_processing_depth_scale};
-  float min_depth{default_depth_processing_min_depth};
-  float max_depth{default_depth_processing_max_depth};
-  float max_normal_depth_jump{default_max_normal_depth_jump_meters};
-  float max_downsample_depth_jump{default_max_downsample_depth_jump_meters};
+  unsigned int levels{kDefaultDepthPyramidLevels};
+  float depth_scale{kDefaultTumDepthScale};
+  float min_depth{kDefaultMinDepthMeters};
+  float max_depth{kDefaultMaxDepthMeters};
+  float max_normal_depth_jump{kDefaultMaxNormalDepthJumpMeters};
+  float max_downsample_depth_jump{kDefaultMaxDownsampleDepthJumpMeters};
   bool bilateral_filter{true};
-  int bilateral_radius{default_bilateral_radius_pixels};
-  float bilateral_spatial_sigma{default_bilateral_spatial_sigma_pixels};
-  float bilateral_depth_sigma{default_bilateral_depth_sigma_meters};
+  int bilateral_radius{kDefaultBilateralRadiusPixels};
+  float bilateral_spatial_sigma{kDefaultBilateralSpatialSigmaPixels};
+  float bilateral_depth_sigma{kDefaultBilateralDepthSigmaMeters};
 };
 
 struct VertexNormalMaps {
@@ -37,28 +39,26 @@ struct VertexNormalMaps {
   image_proc::Vector3fImage normals;
 };
 
-template <MemorySpace Space = MemorySpace::Host>
+// IsConst toggles the pointee types, so the mutable and read-only views share
+// one definition. Views have pointer semantics: constness is shallow, like
+// std::span.
+template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false>
 struct VertexNormalMapsView {
-  image_proc::ImageView<Vec3f, Space> vertices;
-  image_proc::ImageView<Vec3f, Space> normals;
+  template <typename T>
+  using Pointee = std::conditional_t<IsConst, const T, T>;
 
-  static constexpr MemorySpace memory_space = Space;
+  image_proc::ImageView<Pointee<Vec3f>, Space> vertices;
+  image_proc::ImageView<Pointee<Vec3f>, Space> normals;
+
+  static constexpr MemorySpace kMemorySpace = Space;
 };
 
-template <MemorySpace Space = MemorySpace::Host>
-struct ConstVertexNormalMapsView {
-  image_proc::ImageView<const Vec3f, Space> vertices;
-  image_proc::ImageView<const Vec3f, Space> normals;
-
-  static constexpr MemorySpace memory_space = Space;
-};
-
-using HostVertexNormalMapsView = VertexNormalMapsView<MemorySpace::Host>;
-using DeviceVertexNormalMapsView = VertexNormalMapsView<MemorySpace::Device>;
+using HostVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kHost>;
+using DeviceVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kDevice>;
 using ConstHostVertexNormalMapsView =
-    ConstVertexNormalMapsView<MemorySpace::Host>;
+    VertexNormalMapsView<MemorySpace::kHost, true>;
 using ConstDeviceVertexNormalMapsView =
-    ConstVertexNormalMapsView<MemorySpace::Device>;
+    VertexNormalMapsView<MemorySpace::kDevice, true>;
 
 [[nodiscard]] inline HostVertexNormalMapsView view(VertexNormalMaps& maps) {
   return HostVertexNormalMapsView{.vertices = maps.vertices.view(),
@@ -85,39 +85,69 @@ struct DepthProcessingLevel {
   VertexNormalMaps maps;
 };
 
-// Central-difference surface normals. Border pixels and pixels with any
-// non-finite neighbour or depth discontinuity are left as NaN so downstream
-// code can skip them.
-[[nodiscard]] image_proc::Vector3fImage compute_normals_central_differences(
-    const image_proc::Vector3fImage& vertices,
-    const DepthProcessingOptions& options = {});
+class DepthProcessor {
+ public:
+  // Throws std::invalid_argument
+  explicit DepthProcessor(DepthProcessingOptions options = {});
 
-// Edge-preserving bilateral filter on raw depth. Samples outside the usable
-// depth range (and zeros) are ignored; invalid output pixels stay zero.
-[[nodiscard]] image_proc::DepthImage bilateral_filter_depth(
-    const image_proc::DepthImage& depth_image,
-    const DepthProcessingOptions& options = {});
+  // Edge-preserving bilateral filter on raw depth. Samples outside the usable
+  // depth range (and zeros) are ignored; invalid output pixels stay zero.
+  [[nodiscard]] image_proc::DepthImage bilateral_filter(
+      const image_proc::DepthImage& depth_image) const;
 
-// Conservative 2x2 reduction: ignore zero depths, reject neighbourhoods with a
-// large depth jump, and average the remaining valid raw depths.
-[[nodiscard]] image_proc::DepthImage build_depth_pyramid_level(
-    const image_proc::DepthImage& depth_image,
-    const DepthProcessingOptions& options = {});
+  // Conservative 2x2 reduction: ignore zero depths, reject neighbourhoods
+  // with a large depth jump, and average the remaining valid raw depths.
+  [[nodiscard]] image_proc::DepthImage downsample(
+      const image_proc::DepthImage& depth_image) const;
 
-// Back-project one depth image into world space (camera_pose = Identity for
-// camera-space maps). Invalid pixels are set to quiet NaN.
-[[nodiscard]] image_proc::Vector3fImage project_depth_to_vertices(
-    const image_proc::DepthImage& depth_image,
-    const CameraIntrinsics& intrinsics, const Eigen::Matrix4f& camera_pose,
-    const DepthProcessingOptions& options = {});
+  // Back-project one depth image into world space (camera_pose = Identity for
+  // camera-space maps). Invalid pixels are set to quiet NaN.
+  [[nodiscard]] image_proc::Vector3fImage project_to_vertices(
+      const image_proc::DepthImage& depth_image,
+      const CameraIntrinsics& intrinsics,
+      const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;
 
-// Build the bilateral-filtered depth pyramid with image-aligned vertex/normal
-// maps per level for projective ICP.
-[[nodiscard]] std::vector<DepthProcessingLevel> build_surface_pyramid(
-    const image_proc::DepthImage& depth_image,
-    const CameraIntrinsics& intrinsics,
-    const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity(),
-    const DepthProcessingOptions& options = {});
+  // Central-difference surface normals. Border pixels and pixels whose
+  // stencil crosses missing vertices or a depth discontinuity stay NaN.
+  [[nodiscard]] image_proc::Vector3fImage compute_normals(
+      const image_proc::Vector3fImage& vertices) const;
+
+  // Bilateral-filtered depth pyramid with image-aligned vertex/normal maps
+  // per level for projective ICP.
+  [[nodiscard]] std::vector<DepthProcessingLevel> build_surface_pyramid(
+      const image_proc::DepthImage& depth_image,
+      const CameraIntrinsics& intrinsics,
+      const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;
+
+ private:
+  // Raw depth usable for filtering/back-projection: non-zero and in range.
+  [[nodiscard]] std::optional<float> usable_depth(std::uint16_t raw) const;
+
+  // One output pixel of the bilateral filter: Gaussian-weighted average of
+  // the usable raw depths around (col, row), weighted by pixel distance and
+  // by metric depth difference to the center sample.
+  [[nodiscard]] std::optional<std::uint16_t> bilateral_filtered_pixel(
+      const image_proc::DepthImage& depth_image, int col, int row,
+      float center_meters) const;
+
+  // Average of the valid raw depths in one kDownsampleFactor^2 input block;
+  // nullopt for empty blocks and across depth discontinuities.
+  [[nodiscard]] std::optional<std::uint16_t> downsampled_block(
+      const image_proc::DepthImage& depth_image, std::size_t col,
+      std::size_t row) const;
+
+  // Normal from the cross product of central differences over the 4-neighbour
+  // stencil; nullopt at unmeasured vertices and depth discontinuities.
+  [[nodiscard]] std::optional<Vec3f> stencil_normal(
+      const image_proc::Vector3fImage& vertices, std::size_t col,
+      std::size_t row) const;
+
+  DepthProcessingOptions options_;
+  // Gaussian exponent scales of the bilateral kernel, precomputed from the
+  // sigmas in options_.
+  float spatial_scale_{};
+  float range_scale_{};
+};
 
 }  // namespace kinectfusion
 

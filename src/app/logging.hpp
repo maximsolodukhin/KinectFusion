@@ -7,7 +7,9 @@
 #include <kinectfusion/icp_optimizer.hpp>
 #include <string_view>
 
-#define KINECTFUSION_ENABLE_LOGGING true
+#ifdef KINECTFUSION_ENABLE_LOGGING
+#include <utility>
+#endif
 
 // Formatters so ICP tracking results log as single arguments instead of
 // being enumerated field-by-field at every call site

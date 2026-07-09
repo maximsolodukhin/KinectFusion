@@ -29,6 +29,8 @@ class Reconstruction {
       const SurfacePyramid& live_pyramid) const;
   void integrate_tracked_frame(const SurfacePyramid& live_pyramid,
                                const kinectfusion::IcpOutcome& tracking);
+  // Fuses the current sensor frame into the volume at the tracked pose.
+  void integrate_frame(const kinectfusion::image_proc::Vector3fImage* normals);
   void relocalize(const kinectfusion::IcpOutcome& tracking);
   [[nodiscard]] SurfacePyramid build_pyramid() const;
   [[nodiscard]] kinectfusion::SurfaceMaps raycast_model(

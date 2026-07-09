@@ -62,6 +62,8 @@ struct AppOptions {
   // requested margin behind the initial camera.
   [[nodiscard]] kinectfusion::Vec3f volume_origin() const;
 
+  [[nodiscard]] kinectfusion::Volume make_volume() const;
+
   [[nodiscard]] kinectfusion::RaycastOptions raycast_options(
       const kinectfusion::VirtualSensor& sensor,
       const Eigen::Matrix4f& camera_to_world, unsigned int level = 0) const;

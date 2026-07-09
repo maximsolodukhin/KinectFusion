@@ -22,6 +22,13 @@ kinectfusion::Vec3f AppOptions::volume_origin() const {
       .x = -half_extent, .y = -half_extent, .z = -volume_camera_margin};
 }
 
+kinectfusion::Volume AppOptions::make_volume() const {
+  return kinectfusion::Volume{
+      kinectfusion::Vector3s{volume_resolution, volume_resolution,
+                             volume_resolution},
+      voxel_size, volume_origin(), truncation_distance};
+}
+
 kinectfusion::RaycastOptions AppOptions::raycast_options(
     const kinectfusion::VirtualSensor& sensor,
     const Eigen::Matrix4f& camera_to_world, unsigned int level) const {

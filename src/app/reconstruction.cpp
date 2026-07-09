@@ -7,7 +7,6 @@
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/volume.hpp>
-#include <string_view>
 #include <utility>
 
 #include "app_options.hpp"
@@ -15,36 +14,12 @@
 #include "logging.hpp"
 
 namespace app {
-namespace {
-
-[[nodiscard]] constexpr std::string_view failure_name(
-    kinectfusion::IcpFailure failure) {
-  switch (failure) {
-    case kinectfusion::IcpFailure::kInvalidInput:
-      return "kInvalidInput";
-    case kinectfusion::IcpFailure::kTooFewCorrespondences:
-      return "kTooFewCorrespondences";
-    case kinectfusion::IcpFailure::kUnconstrainedSystem:
-      return "kUnconstrainedSystem";
-    case kinectfusion::IcpFailure::kSolveFailed:
-      return "kSolveFailed";
-    case kinectfusion::IcpFailure::kUpdateTooLarge:
-      return "kUpdateTooLarge";
-  }
-  return "unknown";
-}
-
-}  // namespace
 
 Reconstruction::Reconstruction(AppOptions options)
     : options_(std::move(options)),
-      volume_(kinectfusion::Vector3s{options_.volume_resolution,
-                                     options_.volume_resolution,
-                                     options_.volume_resolution},
-              options_.voxel_size, options_.volume_origin(),
-              options_.truncation_distance),
-      tracker_{options_.icp_options()},
-      depth_processor_{options_.depth_options()},
+      volume_(options_.make_volume()),
+      tracker_(options_.icp_options()),
+      depth_processor_(options_.depth_options()),
       tsdf_options_(options_.tsdf_options()) {}
 
 int Reconstruction::run() {
@@ -89,12 +64,7 @@ bool Reconstruction::initialize() {
       "Frame {}: integrating first depth frame into TSDF volume ({}^3 "
       "voxels)",
       sensor_.current_frame_index(), options_.volume_resolution);
-  volume_.integrate_depth_image({.depth = &sensor_.depth_image(),
-                                 .color = &sensor_.color_image(),
-                                 .normals = initial_normals,
-                                 .intrinsics = sensor_.depth_intrinsics(),
-                                 .world_to_camera = camera_to_world_.inverse()},
-                                tsdf_options_);
+  integrate_frame(initial_normals);
 
   log_info("Frame {}: raycasting initialized model",
            sensor_.current_frame_index());
@@ -144,9 +114,9 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
              sensor_.current_frame_index(), level);
     const auto level_model_maps = raycast_model(tracked_pose, level);
     const auto level_intrinsics = sensor_.depth_intrinsics().scaled(level);
+    const unsigned int iterations = options_.icp_iterations_for_level(level);
     log_info("Frame {} level {}: running ICP (iterations={})",
-             sensor_.current_frame_index(), level,
-             options_.icp_iterations_for_level(level));
+             sensor_.current_frame_index(), level, iterations);
     tracking = tracker_.estimate_pose(
         {.live = view(live_pyramid.at(level_index).maps),
          .model = {.vertices = level_model_maps.points.view(),
@@ -154,14 +124,10 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
          .model_intrinsics = level_intrinsics,
          .model_camera_to_world = tracked_pose,
          .initial_camera_to_world = tracked_pose,
-         .iterations = options_.icp_iterations_for_level(level)});
-    log_info(
-        "Frame {} level {}: ICP result={} correspondences={} "
-        "mean_distance={}",
-        sensor_.current_frame_index(), level,
-        tracking.result ? "accepted" : "rejected",
-        tracking.diagnostics.correspondences,
-        tracking.diagnostics.mean_point_distance);
+         .iterations = iterations});
+    log_info("Frame {} level {}: ICP result={} {}",
+             sensor_.current_frame_index(), level,
+             tracking.result ? "accepted" : "rejected", tracking.diagnostics);
     tracked_pose = tracking.pose;
     if (!tracking.result) {
       break;
@@ -174,12 +140,9 @@ void Reconstruction::integrate_tracked_frame(
     const SurfacePyramid& live_pyramid,
     const kinectfusion::IcpOutcome& tracking) {
   if (relocalizing_) {
-    log_info(
-        "Relocalized at frame {} after {} frame(s): correspondences={} "
-        "mean_distance={}",
-        sensor_.current_frame_index(), relocalization_frames_,
-        tracking.diagnostics.correspondences,
-        tracking.diagnostics.mean_point_distance);
+    log_info("Relocalized at frame {} after {} frame(s): {}",
+             sensor_.current_frame_index(), relocalization_frames_,
+             tracking.diagnostics);
     relocalizing_ = false;
     relocalization_frames_ = 0;
   }
@@ -188,12 +151,7 @@ void Reconstruction::integrate_tracked_frame(
 
   log_info("Frame {}: integrating tracked depth frame into TSDF volume",
            sensor_.current_frame_index());
-  volume_.integrate_depth_image({.depth = &sensor_.depth_image(),
-                                 .color = &sensor_.color_image(),
-                                 .normals = &live_pyramid.front().maps.normals,
-                                 .intrinsics = sensor_.depth_intrinsics(),
-                                 .world_to_camera = camera_to_world_.inverse()},
-                                tsdf_options_);
+  integrate_frame(&live_pyramid.front().maps.normals);
 
   log_info("Frame {}: raycasting updated model", sensor_.current_frame_index());
   model_maps_ = raycast_model(camera_to_world_, 0);
@@ -201,11 +159,19 @@ void Reconstruction::integrate_tracked_frame(
            options_.output_dir.string());
   write_outputs(options_, model_maps_, sensor_.current_frame_index());
 
-  log_info(
-      "Frame {} integrated: correspondences={} mean_distance={} "
-      "observed_voxels={}",
-      sensor_.current_frame_index(), tracking.diagnostics.correspondences,
-      tracking.diagnostics.mean_point_distance, volume_.observed_voxel_count());
+  log_info("Frame {} integrated: {} observed_voxels={}",
+           sensor_.current_frame_index(), tracking.diagnostics,
+           volume_.observed_voxel_count());
+}
+
+void Reconstruction::integrate_frame(
+    const kinectfusion::image_proc::Vector3fImage* normals) {
+  volume_.integrate_depth_image({.depth = &sensor_.depth_image(),
+                                 .color = &sensor_.color_image(),
+                                 .normals = normals,
+                                 .intrinsics = sensor_.depth_intrinsics(),
+                                 .world_to_camera = camera_to_world_.inverse()},
+                                tsdf_options_);
 }
 
 void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
@@ -218,17 +184,9 @@ void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
   log_info("Frame {}: raycasting last accepted pose for relocalization",
            sensor_.current_frame_index());
   model_maps_ = raycast_model(camera_to_world_, 0);
-  log_warn(
-      "Frame {} tracking rejected: status={} correspondences={} "
-      "mean_distance={} min_eigenvalue={} condition={} "
-      "update_translation={} update_rotation={}",
-      sensor_.current_frame_index(), failure_name(tracking.result.error()),
-      tracking.diagnostics.correspondences,
-      tracking.diagnostics.mean_point_distance,
-      tracking.diagnostics.min_system_eigenvalue,
-      tracking.diagnostics.condition_number,
-      tracking.diagnostics.update_translation,
-      tracking.diagnostics.update_rotation);
+  log_warn("Frame {} tracking rejected: status={} {}",
+           sensor_.current_frame_index(), tracking.result.error(),
+           tracking.diagnostics);
   if (options_.interactive_relocalization) {
     std::cerr << "Relocalization paused. Align the live sensor with the "
                  "last model prediction and press Enter.\n";

@@ -164,12 +164,14 @@ void Volume::integrate_voxel(const IntegrationContext& context, std::size_t x,
 
   const Eigen::Vector3f camera_point =
       (context.rotation * cell_center(x, y, z)) + context.translation;
+
   const auto pixel =
       project_to_pixel(frame.intrinsics, camera_point, frame.depth->width(),
                        frame.depth->height());
   if (!pixel) {
     return;
   }
+
   const auto measured =
       depth_in_range(frame.depth->at(pixel->x, pixel->y), options.depth_scale,
                      options.min_depth, options.max_depth);
@@ -177,6 +179,7 @@ void Volume::integrate_voxel(const IntegrationContext& context, std::size_t x,
     return;
   }
   const float surface_depth = *measured;
+
   const Eigen::Vector3f ray =
       frame.intrinsics.back_project(pixel_as_vector(*pixel), 1.0F);
   const float lambda = ray.norm();
@@ -198,11 +201,15 @@ void Volume::integrate_voxel(const IntegrationContext& context, std::size_t x,
   if (weight <= 0.0F) {
     return;
   }
+
   Voxel& voxel = at(x, y, z);
   voxel = voxel.fused(tsdf, weight, options.max_weight);
 
-  if (frame.color != nullptr &&
-      signed_distance <= truncation * kColorIntegrationTruncationFraction) {
+  if (frame.color == nullptr) {
+    return;
+  }
+
+  if (signed_distance <= truncation * kColorIntegrationTruncationFraction) {
     const ColorRgba rgba = rgba_from_pixel(frame.color->at(pixel->x, pixel->y));
     ColorVoxel& color_voxel = color_at(x, y, z);
     color_voxel = color_voxel.fused(make_vec3f(rgba.x(), rgba.y(), rgba.z()),

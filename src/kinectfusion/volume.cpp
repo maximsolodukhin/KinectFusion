@@ -38,6 +38,8 @@ void validate_options(const RaycastOptions& options) {
           "Raycast intrinsics must have positive focal lengths");
   require(options.width > 0U && options.height > 0U,
           "Raycast dimensions must be positive");
+  require(options.camera_to_world.allFinite(),
+          "Raycast camera_to_world must be finite");
   require(options.min_depth >= 0.0F && options.max_depth > options.min_depth,
           "Raycast depth range is invalid");
   require(options.step_scale > 0.0F, "Raycast step scale must be positive");

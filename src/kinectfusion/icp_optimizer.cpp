@@ -164,12 +164,11 @@ ProjectiveIcpTracker::match_point(const Vec3f& live_vertex,
     return std::nullopt;
   }
 
-  Correspondence match{};
-  match.jacobian.head<3>() = source.cross(model_normal);
-  match.jacobian.tail<3>() = model_normal;
-  match.residual = model_normal.dot(model_vertex - source);
-  match.distance = distance;
-  return match;
+  Eigen::Matrix<float, kIcpDof, 1> jacobian;
+  jacobian << source.cross(model_normal), model_normal;
+  return Correspondence{.jacobian = jacobian,
+                        .residual = model_normal.dot(model_vertex - source),
+                        .distance = distance};
 }
 
 ProjectiveIcpTracker::SystemStability
@@ -203,15 +202,14 @@ ProjectiveIcpTracker::check_system_stability(
 
 ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
     const NormalEquations& equations) const {
-  Increment increment;
   if (equations.count < options_.min_correspondences) {
-    return increment;
+    return {};
   }
 
   const Eigen::Matrix<float, kIcpDof, 1> solution =
       equations.matrix.ldlt().solve(equations.rhs);
   if (!solution.allFinite()) {
-    return increment;
+    return {};
   }
 
   const Eigen::Vector3f angle_axis = solution.head<3>();
@@ -222,11 +220,10 @@ ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
     rotation = Eigen::AngleAxisf(angle, angle_axis / angle).toRotationMatrix();
   }
 
-  increment.transform = make_transform_matrix(rotation, translation);
-  increment.update_rotation = angle;
-  increment.update_translation = translation.norm();
-  increment.solved = true;
-  return increment;
+  return Increment{.transform = make_transform_matrix(rotation, translation),
+                   .update_translation = translation.norm(),
+                   .update_rotation = angle,
+                   .solved = true};
 }
 
 }  // namespace kinectfusion

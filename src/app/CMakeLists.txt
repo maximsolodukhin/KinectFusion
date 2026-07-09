@@ -5,7 +5,8 @@ endif()
 
 option(KINECTFUSION_ENABLE_LOGGING "Enable KinectFusion progress logging" ${KINECTFUSION_ENABLE_LOGGING_DEFAULT})
 
-add_executable(kinectfusion_app main.cpp app_options.cpp frame_output.cpp)
+add_executable(kinectfusion_app main.cpp app_options.cpp frame_output.cpp
+                                reconstruction.cpp)
 
 set_target_properties(kinectfusion_app PROPERTIES OUTPUT_NAME kinectfusion)
 

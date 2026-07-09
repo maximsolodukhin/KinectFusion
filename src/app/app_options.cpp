@@ -175,12 +175,12 @@ void validate_options(const AppOptions& app_options) {
   using kinectfusion::require;
   require(app_options.volume_resolution > 0,
           "volume resolution must be positive");
+  require(app_options.voxel_size > 0.0F, "voxel size must be positive");
   const float extent = static_cast<float>(app_options.volume_resolution) *
                        app_options.voxel_size;
   require(app_options.volume_camera_margin >= 0.0F &&
               app_options.volume_camera_margin <= extent,
           "volume camera margin must be within [0, volume extent]");
-  require(app_options.voxel_size > 0.0F, "voxel size must be positive");
   require(app_options.truncation_distance > 0.0F,
           "truncation distance must be positive");
   require(app_options.depth_scale > 0.0F, "depth scale must be positive");

@@ -93,17 +93,18 @@ function(
     list(APPEND MSVC_WARNINGS /WX)
   endif()
 
-  # GCC 12+ emits spurious -Wnull-dereference at -O2/-O3 from inlined, heavily
-  # templated code -- notably Eigen's Householder / SelfAdjointEigenSolver
-  # pipelines. Because these diagnostics are raised in late optimizer passes
-  # (after inlining discards pointer provenance), they are attributed to the
-  # outermost user-code call site, so marking Eigen as SYSTEM (which only
-  # affects -isystem, i.e. frontend diagnostics) does not silence them. Keep
-  # the warning on so real issues in our own code still show up, but demote it
-  # from an error on GCC.
+  # GCC emits spurious -Wmaybe-uninitialized and -Wnull-dereference diagnostics
+  # at -O2/-O3 from standard-library wrappers and inlined, heavily templated
+  # code -- notably std::optional and Eigen's decomposition pipelines. Because
+  # these diagnostics are raised in late optimizer passes (after inlining
+  # discards pointer provenance), they are attributed to the outermost
+  # user-code call site, so marking dependencies as SYSTEM (which only affects
+  # -isystem, i.e. frontend diagnostics) does not silence them. Keep the
+  # warnings on so real issues still show up, but demote them from errors on
+  # GCC.
   # See GCC PR96003, PR99578, PR105562.
   if(WARNINGS_AS_ERRORS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    list(APPEND GCC_WARNINGS -Wno-error=null-dereference)
+    list(APPEND GCC_WARNINGS -Wno-error=maybe-uninitialized -Wno-error=null-dereference)
   endif()
 
   if(MSVC)

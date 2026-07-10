@@ -121,9 +121,9 @@ Renders land in `./outputs` on the host. Notes:
 
 ### Development Container
 
-The intended flow is: bring the dev container up in the background with the
-project bind-mounted, then have your editor attach to the running container
-(named `kinectfusion-dev`).
+Bring the dev container up in the background with the project bind-mounted, then
+attach to the running container (named `kinectfusion-dev`) from the editor, and
+work there.
 
 ```bash
 docker compose up -d dev
@@ -145,6 +145,35 @@ To work with the project, navigate to the `/workspace` directory, and:
 - work on the code
 - build and run
 
+### Conda Environment
+
+As an alternative to the development container, you can use a Conda environment.
+
+`environment.yml` provides a development environment with a GCC 15 toolchain,
+CMake, debugger, analyzers, cache, and LLVM 22 tools. Project libraries continue
+to be pinned and downloaded by CPM during CMake configuration.
+
+Create and activate the environment:
+
+```bash
+conda env create --file environment.yml
+conda activate kinectfusion-dev
+```
+
+Download the development dataset and run the build:
+
+```bash
+./scripts/fetch_tum_freiburg1_xyz.sh
+cmake --preset release
+cmake --build --preset release --parallel
+```
+
+When `environment.yml` changes, update an existing environment with:
+
+```bash
+conda env update --file environment.yml --prune
+```
+
 ### Build and run (regardless of the development container)
 
 #### CMake Presets
@@ -159,13 +188,19 @@ To work with the project, navigate to the `/workspace` directory, and:
 Example:
 
 ```bash
-cmake --workflow --preset release
+cmake --preset release
 cmake --build --preset release --parallel
 ```
 
-**Note:** for heavy (mostly `dev-`) builds, extensive parallelization may
-exhaust the memory available to the development container (you will notice it by
-container hanging). You can reduce the number of parallel jobs with
+or a one-liner without parallelization:
+
+```bash
+cmake --workflow --preset release
+```
+
+**Note:** for heavy builds, extensive parallelization may exhaust the memory
+available to the development container or the workstation (you will notice it by
+connection hanging). You can specify the number of parallel jobs with
 `--parallel 2`.
 
 ### Formatting

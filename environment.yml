@@ -1,0 +1,29 @@
+# Native Linux development environment alternative to the Dockerfile's dev stage.
+# Project libraries (Eigen, Ceres, Catch2, etc.) remain pinned and fetched by CPM.
+name: kinectfusion-dev
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  # Use the GCC 15 toolchain from conda-forge.
+  - gcc_linux-64=15
+  - gxx_linux-64=15
+
+  # Build and debugging tools.
+  - cmake>=3.29
+  - make
+  - gdb
+  - cppcheck
+  - ccache
+
+  # Keep these on LLVM 22 because .clang-format uses LLVM 22 options.
+  - clang-tools=22
+  - clang-format=22
+
+  # CPM downloads plus libspng's system dependency.
+  - git
+  - wget
+  - ca-certificates
+  - zlib

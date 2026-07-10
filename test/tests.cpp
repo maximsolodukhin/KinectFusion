@@ -156,8 +156,7 @@ TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
                              kSyntheticVolumeResolution,
                              kSyntheticVolumeResolution},
       kSyntheticVoxelSize,
-      Eigen::Vector3f{kSyntheticOriginX, kSyntheticOriginY,
-                      kSyntheticOriginZ},
+      Eigen::Vector3f{kSyntheticOriginX, kSyntheticOriginY, kSyntheticOriginZ},
       kSyntheticTruncationDistance};
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 20.0F, .fy = 20.0F, .cx = 7.5F, .cy = 7.5F};
@@ -183,12 +182,12 @@ TEST_CASE("Projective ICP converges on identical synthetic maps",
                                          .min_normal_dot = 0.99F,
                                          .min_system_eigenvalue = 1.0e-12F,
                                          .max_condition_number = 1.0e12F}};
-  const auto result = tracker.estimate_pose(
-      {.live = view(surface.live),
-       .model = {.vertices = surface.model.points.view(),
-                 .normals = surface.model.normals.view()},
-       .model_intrinsics = intrinsics,
-       .iterations = 3});
+  const auto result =
+      tracker.estimate_pose({.live = view(surface.live),
+                             .model = {.vertices = surface.model.points.view(),
+                                       .normals = surface.model.normals.view()},
+                             .model_intrinsics = intrinsics,
+                             .iterations = 3});
 
   REQUIRE(result.result.has_value());
   REQUIRE(std::holds_alternative<kinectfusion::Converged>(*result.result));
@@ -220,13 +219,13 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
                                          .min_normal_dot = 0.9F,
                                          .min_system_eigenvalue = 1.0e-12F,
                                          .max_condition_number = 1.0e12F}};
-  const auto result = tracker.estimate_pose(
-      {.live = view(surface.live),
-       .model = {.vertices = surface.model.points.view(),
-                 .normals = surface.model.normals.view()},
-       .model_intrinsics = intrinsics,
-       .initial_camera_to_world = initial,
-       .iterations = 15});
+  const auto result =
+      tracker.estimate_pose({.live = view(surface.live),
+                             .model = {.vertices = surface.model.points.view(),
+                                       .normals = surface.model.normals.view()},
+                             .model_intrinsics = intrinsics,
+                             .initial_camera_to_world = initial,
+                             .iterations = 15});
 
   REQUIRE(result.result.has_value());
   REQUIRE(std::holds_alternative<kinectfusion::Converged>(*result.result));

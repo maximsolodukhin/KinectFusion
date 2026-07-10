@@ -10,5 +10,9 @@
     "[c]": {
         "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
         "editor.formatOnSave": true
-    }
+    },
+    "clangd.path": "${env:HOME}/miniconda3/envs/kinectfusion-dev/bin/clangd",
+    "clangd.arguments": [
+        "--compile-commands-dir=${env:HOME}/KinectFusion/build/dev-strict" // pointing to dev- build so that the test files are also covered
+    ]
 }

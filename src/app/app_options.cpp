@@ -36,20 +36,24 @@ kinectfusion::Volume AppOptions::make_volume() const {
       voxel_size, volume_origin(), truncation_distance};
 }
 
-kinectfusion::RaycastOptions AppOptions::raycast_options(
-    const kinectfusion::VirtualSensor& sensor,
-    const Eigen::Matrix4f& camera_to_world, unsigned int level) const {
-  const auto scale = 1U << level;
+kinectfusion::RaycastOptions AppOptions::raycast_options() const {
   return kinectfusion::RaycastOptions{
-      .intrinsics = sensor.depth_intrinsics().scaled(level),
-      .width = sensor.depth_image().width() / scale,
-      .height = sensor.depth_image().height() / scale,
-      .camera_to_world = camera_to_world,
       .min_depth = min_depth,
       .max_depth = max_depth,
       .tsdf_corner_policy = raycast_tsdf_from_valid_corners
                                 ? kinectfusion::CornerPolicy::kRequireAll
                                 : kinectfusion::CornerPolicy::kSkipMissing};
+}
+
+kinectfusion::RaycastCamera AppOptions::raycast_camera(
+    const kinectfusion::VirtualSensor& sensor,
+    const Eigen::Matrix4f& camera_to_world, unsigned int level) {
+  const auto scale = 1U << level;
+  return kinectfusion::RaycastCamera{
+      .intrinsics = sensor.depth_intrinsics().scaled(level),
+      .width = sensor.depth_image().width() / scale,
+      .height = sensor.depth_image().height() / scale,
+      .camera_to_world = camera_to_world};
 }
 
 kinectfusion::DepthProcessingOptions AppOptions::depth_options() const {

@@ -42,7 +42,8 @@ class Reconstruction {
   kinectfusion::ProjectiveIcpTracker tracker_;
   kinectfusion::DepthProcessor<kinectfusion::MemorySpace::kHost>
       depth_processor_;
-  kinectfusion::TsdfIntegrationOptions tsdf_options_;
+  kinectfusion::TsdfIntegrator integrator_;
+  kinectfusion::Raycaster raycaster_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
   kinectfusion::SurfaceMaps model_maps_;
   int processed_frames_{1};

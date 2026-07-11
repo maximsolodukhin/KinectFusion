@@ -64,9 +64,13 @@ struct AppOptions {
 
   [[nodiscard]] kinectfusion::Volume make_volume() const;
 
-  [[nodiscard]] kinectfusion::RaycastOptions raycast_options(
+  [[nodiscard]] kinectfusion::RaycastOptions raycast_options() const;
+
+  // Per-call raycast camera at the given pose and pyramid level. Static: the
+  // camera is derived from the sensor and pose alone, not from any option.
+  [[nodiscard]] static kinectfusion::RaycastCamera raycast_camera(
       const kinectfusion::VirtualSensor& sensor,
-      const Eigen::Matrix4f& camera_to_world, unsigned int level = 0) const;
+      const Eigen::Matrix4f& camera_to_world, unsigned int level = 0);
 
   [[nodiscard]] kinectfusion::DepthProcessingOptions depth_options() const;
 

@@ -165,12 +165,14 @@ TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
       kSyntheticTruncationDistance};
   const kinectfusion::CameraIntrinsics intrinsics{
       .fx = 20.0F, .fy = 20.0F, .cx = 7.5F, .cy = 7.5F};
-  volume.integrate_depth_image({.depth = &depth, .intrinsics = intrinsics});
+  const kinectfusion::TsdfIntegrator integrator{};
+  integrator.integrate(volume, {.depth = &depth, .intrinsics = intrinsics});
 
   REQUIRE(volume.observed_voxel_count() > 0);
 
-  const auto maps =
-      volume.raycast(intrinsics, kWidth, kHeight, Eigen::Matrix4f::Identity());
+  const kinectfusion::Raycaster raycaster{};
+  const auto maps = raycaster.raycast(
+      volume, {.intrinsics = intrinsics, .width = kWidth, .height = kHeight});
 
   REQUIRE(valid_raycast_pixels(maps) > 0);
 }

@@ -6,7 +6,6 @@
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
-#include <vector>
 
 #include "app_options.hpp"
 
@@ -21,7 +20,7 @@ class Reconstruction {
   [[nodiscard]] int run();
 
  private:
-  using SurfacePyramid = std::vector<kinectfusion::DepthProcessingLevel<>>;
+  using SurfacePyramid = kinectfusion::SurfacePyramid;
 
   [[nodiscard]] bool initialize();
   void process_frame();

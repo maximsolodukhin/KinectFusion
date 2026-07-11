@@ -91,6 +91,11 @@ struct DepthProcessingLevel {
   VertexNormalMapsFor<Space> maps;
 };
 
+template <MemorySpace Space>
+using SurfacePyramidFor = std::vector<DepthProcessingLevel<Space>>;
+
+using SurfacePyramid = SurfacePyramidFor<MemorySpace::kHost>;
+
 template <MemorySpace Space = MemorySpace::kHost>
 class DepthProcessor;
 
@@ -124,7 +129,7 @@ class DepthProcessor<MemorySpace::kHost> {
 
   // Bilateral-filtered depth pyramid with image-aligned vertex/normal maps
   // per level for projective ICP.
-  [[nodiscard]] std::vector<DepthProcessingLevel<>> build_surface_pyramid(
+  [[nodiscard]] SurfacePyramid build_surface_pyramid(
       const image_proc::DepthImage& depth_image,
       const CameraIntrinsics& intrinsics,
       const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;

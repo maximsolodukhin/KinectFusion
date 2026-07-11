@@ -230,12 +230,11 @@ std::optional<Vec3f> DepthProcessor<MemorySpace::kHost>::stencil_normal(
   return normal / length;
 }
 
-std::vector<DepthProcessingLevel<>>
-DepthProcessor<MemorySpace::kHost>::build_surface_pyramid(
+SurfacePyramid DepthProcessor<MemorySpace::kHost>::build_surface_pyramid(
     const image_proc::DepthImage& depth_image,
     const CameraIntrinsics& intrinsics,
     const Eigen::Matrix4f& camera_pose) const {
-  std::vector<DepthProcessingLevel<>> pyramid;
+  SurfacePyramid pyramid;
   pyramid.reserve(options_.levels);
   image_proc::DepthImage current = bilateral_filter(depth_image);
   for (unsigned int level = 0; level < options_.levels; ++level) {

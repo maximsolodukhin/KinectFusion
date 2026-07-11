@@ -45,7 +45,7 @@ add_test(
 add_test(NAME cli.version_matches COMMAND $<TARGET_FILE:kinectfusion_app> --version)
 set_tests_properties(cli.version_matches PROPERTIES PASS_REGULAR_EXPRESSION "${kinectfusion_VERSION}")
 
-add_executable(tests tests.cpp)
+add_executable(tests tests.cpp type_assertions.cpp)
 target_link_libraries(
   tests
   PRIVATE kinectfusion::kinectfusion_warnings
@@ -54,6 +54,16 @@ target_link_libraries(
           Catch2::Catch2WithMain)
 
 kinectfusion_configure_linker(tests)
+
+if(KINECTFUSION_HAS_CUDA)
+  add_library(cuda_type_assertions OBJECT cuda_type_assertions.cu)
+  target_link_libraries(
+    cuda_type_assertions
+    PRIVATE kinectfusion::kinectfusion_warnings
+            kinectfusion::kinectfusion_options
+            kinectfusion::kinectfusion)
+  set_target_properties(cuda_type_assertions PROPERTIES CUDA_STANDARD 23)
+endif()
 
 if(WIN32 AND BUILD_SHARED_LIBS)
   add_custom_command(

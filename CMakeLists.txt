@@ -29,6 +29,19 @@ include(cmake/PreventInSourceBuilds.cmake)
 
 include(cmake/ProjectOptions.cmake)
 kinectfusion_setup_options()
+
+set(KINECTFUSION_HAS_CUDA OFF)
+if(KINECTFUSION_ENABLE_CUDA)
+  include(CheckLanguage)
+  check_language(CUDA)
+  if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(KINECTFUSION_HAS_CUDA ON)
+  else()
+    message(STATUS "CUDA compiler not found; building CPU-only")
+  endif()
+endif()
+
 kinectfusion_global_options()
 include(Dependencies.cmake)
 kinectfusion_setup_dependencies()
@@ -87,4 +100,3 @@ endif()
 #   # FIXME: this does not work! CK
 #   # PRIVATE_DEPENDENCIES_CONFIGURED project_options project_warnings
 # )
-

@@ -21,7 +21,7 @@ class Reconstruction {
   [[nodiscard]] int run();
 
  private:
-  using SurfacePyramid = std::vector<kinectfusion::DepthProcessingLevel>;
+  using SurfacePyramid = std::vector<kinectfusion::DepthProcessingLevel<>>;
 
   [[nodiscard]] bool initialize();
   void process_frame();
@@ -41,7 +41,8 @@ class Reconstruction {
   kinectfusion::VirtualSensor sensor_;
   kinectfusion::Volume volume_;
   kinectfusion::ProjectiveIcpTracker tracker_;
-  kinectfusion::DepthProcessor depth_processor_;
+  kinectfusion::DepthProcessor<kinectfusion::MemorySpace::kHost>
+      depth_processor_;
   kinectfusion::TsdfIntegrationOptions tsdf_options_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
   kinectfusion::SurfaceMaps model_maps_;

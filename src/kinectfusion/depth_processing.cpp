@@ -40,17 +40,19 @@ constexpr std::size_t kDownsampleFactor = 2U;
 
 }  // namespace
 
-DepthProcessor::DepthProcessor(DepthProcessingOptions options)
+DepthProcessor<MemorySpace::kHost>::DepthProcessor(
+    DepthProcessingOptions options)
     : options_(validated(options)),
       spatial_scale_(gaussian_exponent_scale(options_.bilateral_spatial_sigma)),
       range_scale_(gaussian_exponent_scale(options_.bilateral_depth_sigma)) {}
 
-std::optional<float> DepthProcessor::usable_depth(std::uint16_t raw) const {
+std::optional<float> DepthProcessor<MemorySpace::kHost>::usable_depth(
+    std::uint16_t raw) const {
   return depth_in_range(raw, options_.depth_scale, options_.min_depth,
                         options_.max_depth);
 }
 
-image_proc::DepthImage DepthProcessor::bilateral_filter(
+image_proc::DepthImage DepthProcessor<MemorySpace::kHost>::bilateral_filter(
     const image_proc::DepthImage& depth_image) const {
   if (!options_.bilateral_filter || options_.bilateral_radius == 0) {
     return depth_image;
@@ -73,7 +75,8 @@ image_proc::DepthImage DepthProcessor::bilateral_filter(
   return filtered;
 }
 
-std::optional<std::uint16_t> DepthProcessor::bilateral_filtered_pixel(
+std::optional<std::uint16_t>
+DepthProcessor<MemorySpace::kHost>::bilateral_filtered_pixel(
     const image_proc::DepthImage& depth_image, int col, int row,
     float center_meters) const {
   const int width = static_cast<int>(depth_image.width());
@@ -109,7 +112,7 @@ std::optional<std::uint16_t> DepthProcessor::bilateral_filtered_pixel(
   return static_cast<std::uint16_t>(std::lround(weighted_sum / weight_sum));
 }
 
-image_proc::DepthImage DepthProcessor::downsample(
+image_proc::DepthImage DepthProcessor<MemorySpace::kHost>::downsample(
     const image_proc::DepthImage& depth_image) const {
   const std::size_t width = depth_image.width() / kDownsampleFactor;
   const std::size_t height = depth_image.height() / kDownsampleFactor;
@@ -125,7 +128,8 @@ image_proc::DepthImage DepthProcessor::downsample(
   return downsampled;
 }
 
-std::optional<std::uint16_t> DepthProcessor::downsampled_block(
+std::optional<std::uint16_t>
+DepthProcessor<MemorySpace::kHost>::downsampled_block(
     const image_proc::DepthImage& depth_image, std::size_t col,
     std::size_t row) const {
   std::uint32_t sum = 0;
@@ -160,7 +164,8 @@ std::optional<std::uint16_t> DepthProcessor::downsampled_block(
   return static_cast<std::uint16_t>((sum + (count / 2U)) / count);
 }
 
-image_proc::Vector3fImage DepthProcessor::project_to_vertices(
+image_proc::Vector3fImage
+DepthProcessor<MemorySpace::kHost>::project_to_vertices(
     const image_proc::DepthImage& depth_image,
     const CameraIntrinsics& intrinsics,
     const Eigen::Matrix4f& camera_pose) const {
@@ -184,7 +189,7 @@ image_proc::Vector3fImage DepthProcessor::project_to_vertices(
   return vertices;
 }
 
-image_proc::Vector3fImage DepthProcessor::compute_normals(
+image_proc::Vector3fImage DepthProcessor<MemorySpace::kHost>::compute_normals(
     const image_proc::Vector3fImage& vertices) const {
   image_proc::Vector3fImage normals{vertices.width(), vertices.height(),
                                     invalid_vec3f()};
@@ -202,7 +207,7 @@ image_proc::Vector3fImage DepthProcessor::compute_normals(
   return normals;
 }
 
-std::optional<Vec3f> DepthProcessor::stencil_normal(
+std::optional<Vec3f> DepthProcessor<MemorySpace::kHost>::stencil_normal(
     const image_proc::Vector3fImage& vertices, std::size_t col,
     std::size_t row) const {
   const Vec3f& left = vertices.at(col - 1, row);
@@ -225,11 +230,12 @@ std::optional<Vec3f> DepthProcessor::stencil_normal(
   return normal / length;
 }
 
-std::vector<DepthProcessingLevel> DepthProcessor::build_surface_pyramid(
+std::vector<DepthProcessingLevel<>>
+DepthProcessor<MemorySpace::kHost>::build_surface_pyramid(
     const image_proc::DepthImage& depth_image,
     const CameraIntrinsics& intrinsics,
     const Eigen::Matrix4f& camera_pose) const {
-  std::vector<DepthProcessingLevel> pyramid;
+  std::vector<DepthProcessingLevel<>> pyramid;
   pyramid.reserve(options_.levels);
   image_proc::DepthImage current = bilateral_filter(depth_image);
   for (unsigned int level = 0; level < options_.levels; ++level) {

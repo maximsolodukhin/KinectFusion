@@ -34,10 +34,13 @@ struct DepthProcessingOptions {
   float bilateral_depth_sigma{kDefaultBilateralDepthSigmaMeters};
 };
 
-struct VertexNormalMaps {
-  image_proc::Vector3fImage vertices;
-  image_proc::Vector3fImage normals;
+template <MemorySpace Space>
+struct VertexNormalMapsFor {
+  image_proc::Vector3fImageFor<Space> vertices;
+  image_proc::Vector3fImageFor<Space> normals;
 };
+
+using VertexNormalMaps = VertexNormalMapsFor<MemorySpace::kHost>;
 
 // IsConst toggles the pointee types, so the mutable and read-only views share
 // one definition. Views have pointer semantics: constness is shallow, like
@@ -71,21 +74,28 @@ using ConstDeviceVertexNormalMapsView =
                                        .normals = maps.normals.view()};
 }
 
+template <MemorySpace Space = MemorySpace::kHost>
 struct DepthProcessingLevel {
-  DepthProcessingLevel(image_proc::DepthImage depth,
+  using depth_image_type = image_proc::DepthImageFor<Space>;
+
+  DepthProcessingLevel(image_proc::DepthImageFor<Space> depth,
                        const CameraIntrinsics& camera_intrinsics,
-                       image_proc::Vector3fImage vertices,
-                       image_proc::Vector3fImage normals)
+                       image_proc::Vector3fImageFor<Space> vertices,
+                       image_proc::Vector3fImageFor<Space> normals)
       : depth_image(std::move(depth)),
         intrinsics(camera_intrinsics),
         maps{.vertices = std::move(vertices), .normals = std::move(normals)} {}
 
-  image_proc::DepthImage depth_image;
+  image_proc::DepthImageFor<Space> depth_image;
   CameraIntrinsics intrinsics;
-  VertexNormalMaps maps;
+  VertexNormalMapsFor<Space> maps;
 };
 
-class DepthProcessor {
+template <MemorySpace Space = MemorySpace::kHost>
+class DepthProcessor;
+
+template <>
+class DepthProcessor<MemorySpace::kHost> {
  public:
   // Throws std::invalid_argument
   explicit DepthProcessor(DepthProcessingOptions options = {});
@@ -114,7 +124,7 @@ class DepthProcessor {
 
   // Bilateral-filtered depth pyramid with image-aligned vertex/normal maps
   // per level for projective ICP.
-  [[nodiscard]] std::vector<DepthProcessingLevel> build_surface_pyramid(
+  [[nodiscard]] std::vector<DepthProcessingLevel<>> build_surface_pyramid(
       const image_proc::DepthImage& depth_image,
       const CameraIntrinsics& intrinsics,
       const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;
@@ -148,6 +158,9 @@ class DepthProcessor {
   float spatial_scale_{};
   float range_scale_{};
 };
+
+DepthProcessor(DepthProcessingOptions = {})
+    -> DepthProcessor<MemorySpace::kHost>;
 
 }  // namespace kinectfusion
 

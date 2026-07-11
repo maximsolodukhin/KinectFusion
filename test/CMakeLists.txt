@@ -63,6 +63,7 @@ if(KINECTFUSION_HAS_CUDA)
             kinectfusion::kinectfusion_options
             kinectfusion::kinectfusion)
   set_target_properties(cuda_type_assertions PROPERTIES CUDA_STANDARD 23)
+  add_dependencies(tests cuda_type_assertions)
 endif()
 
 if(WIN32 AND BUILD_SHARED_LIBS)

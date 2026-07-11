@@ -21,7 +21,8 @@ Reconstruction::Reconstruction(AppOptions options)
       volume_(options_.make_volume()),
       tracker_(options_.icp_options()),
       depth_processor_(options_.depth_options()),
-      tsdf_options_(options_.tsdf_options()) {}
+      integrator_(options_.tsdf_options()),
+      raycaster_(options_.raycast_options()) {}
 
 int Reconstruction::run() {
   if (!initialize()) {
@@ -167,12 +168,12 @@ void Reconstruction::integrate_tracked_frame(
 
 void Reconstruction::integrate_frame(
     const kinectfusion::image_proc::Vector3fImage* normals) {
-  volume_.integrate_depth_image({.depth = &sensor_.depth_image(),
-                                 .color = &sensor_.color_image(),
-                                 .normals = normals,
-                                 .intrinsics = sensor_.depth_intrinsics(),
-                                 .world_to_camera = camera_to_world_.inverse()},
-                                tsdf_options_);
+  integrator_.integrate(volume_,
+                        {.depth = &sensor_.depth_image(),
+                         .color = &sensor_.color_image(),
+                         .normals = normals,
+                         .intrinsics = sensor_.depth_intrinsics(),
+                         .world_to_camera = camera_to_world_.inverse()});
 }
 
 void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
@@ -202,8 +203,8 @@ Reconstruction::SurfacePyramid Reconstruction::build_pyramid() const {
 
 kinectfusion::SurfaceMaps Reconstruction::raycast_model(
     const Eigen::Matrix4f& camera_to_world, unsigned int level) const {
-  return volume_.raycast(
-      options_.raycast_options(sensor_, camera_to_world, level));
+  return raycaster_.raycast(
+      volume_, AppOptions::raycast_camera(sensor_, camera_to_world, level));
 }
 
 void Reconstruction::log_frame_loaded() const {

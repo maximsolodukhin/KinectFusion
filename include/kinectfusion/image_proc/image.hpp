@@ -40,10 +40,18 @@ using HostImageView = ImageView<PixelT, MemorySpace::kHost>;
 template <typename PixelT>
 using DeviceImageView = ImageView<PixelT, MemorySpace::kDevice>;
 
+template <typename PixelT, MemorySpace Space = MemorySpace::kHost>
+class Image;
+
+// Host images retain value semantics and contiguous std::vector storage.
+// The device specialization is defined separately in device_image.cuh so
+// CPU-only translation units do not depend on the CUDA runtime headers.
 template <typename PixelT>
-class Image {
+class Image<PixelT, MemorySpace::kHost> {
  public:
   using value_type = PixelT;
+
+  static constexpr MemorySpace kMemorySpace = MemorySpace::kHost;
 
   Image() = default;
   Image(std::size_t width, std::size_t height)
@@ -82,17 +90,18 @@ class Image {
   std::vector<PixelT> data_;
 };
 
-class DepthImage final : public Image<std::uint16_t> {
- public:
-  using Image<std::uint16_t>::Image;
-};
+template <MemorySpace Space>
+using DepthImageFor = Image<std::uint16_t, Space>;
 
-class ColorImage final : public Image<std::uint32_t> {
- public:
-  using Image<std::uint32_t>::Image;
-};
+template <MemorySpace Space>
+using ColorImageFor = Image<std::uint32_t, Space>;
 
-using Vector3fImage = Image<kinectfusion::Vec3f>;
+template <MemorySpace Space>
+using Vector3fImageFor = Image<kinectfusion::Vec3f, Space>;
+
+using DepthImage = DepthImageFor<MemorySpace::kHost>;
+using ColorImage = ColorImageFor<MemorySpace::kHost>;
+using Vector3fImage = Vector3fImageFor<MemorySpace::kHost>;
 
 }  // namespace kinectfusion::image_proc
 

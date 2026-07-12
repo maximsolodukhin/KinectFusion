@@ -1,10 +1,14 @@
 #include <Eigen/Cholesky>
+#include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
-#include <Eigen/LU>
 #include <cmath>
+#include <cstddef>
 #include <expected>
+#include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/vector.hpp>
 #include <optional>
 
 namespace kinectfusion {

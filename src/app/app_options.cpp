@@ -1,6 +1,13 @@
 #include "app_options.hpp"
 
+#include <CLI/CLI.hpp>
+#include <Eigen/Core>
+#include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
+#include <kinectfusion/virtual_sensor.hpp>
+#include <kinectfusion/volume.hpp>
 #include <string>
 
 namespace app {

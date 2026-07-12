@@ -6,6 +6,7 @@
 #include <fstream>
 #include <kinectfusion/image_proc/write_png.hpp>
 #include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <stdexcept>
 #include <string>

@@ -1,7 +1,12 @@
+#include <Eigen/Core>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <optional>
 

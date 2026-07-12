@@ -1,6 +1,10 @@
+#include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <kinectfusion/image_proc/read_png.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
+#include <string>
+#include <vector>
 
 namespace kinectfusion {
 namespace {

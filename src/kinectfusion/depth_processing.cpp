@@ -1,12 +1,18 @@
+#include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <limits>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace kinectfusion {
 namespace {

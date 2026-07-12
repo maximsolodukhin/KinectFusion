@@ -1,6 +1,7 @@
 #include "reconstruction.hpp"
 
-#include <Eigen/LU>
+#include <spdlog/spdlog.h>
+
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>

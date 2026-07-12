@@ -3,8 +3,13 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
+#include <cstdint>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <utility>
 #include <variant>

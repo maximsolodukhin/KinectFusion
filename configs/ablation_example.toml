@@ -1,0 +1,31 @@
+# Example ablation pipeline set: every pipeline starts from the CLI-derived
+# defaults and overrides only what it ablates. Volume geometry stays global
+# (CLI flags) so cross-pipeline comparison is defined on identical grids.
+#
+# Run:
+#   kinectfusion <dataset> --pipelines configs/ablation_example.toml
+#
+# Per-frame deviation stats of every pipeline against `reference` are logged
+# and appended to <output-dir>/ablation_stats.csv; per-pipeline raycasts land
+# in <output-dir>/<pipeline-name>/.
+
+reference = "baseline"
+compare-every-n-frames = 1
+
+[[pipeline]]
+name = "baseline"
+tsdf-variant = "angle-weighted"
+
+[[pipeline]]
+name = "classic"
+tsdf-variant = "classic"
+
+# Available per-pipeline keys:
+#   name                        (required, unique)
+#   space                       "cpu" | "cuda" (falls back to cpu with a warning)
+#   tsdf-variant                "angle-weighted" | "classic"
+#   projective-distance         bool
+#   distance-scaled-truncation  bool
+#   truncation-distance-scale   float
+#   observation-weight          float
+#   max-weight                  float

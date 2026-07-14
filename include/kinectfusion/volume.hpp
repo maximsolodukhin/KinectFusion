@@ -1,20 +1,19 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_VOLUME_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_VOLUME_HPP
 
-#include <Eigen/Core>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/image_proc/image.hpp>
-#include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
+#include <span>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace kinectfusion {
 
-struct Voxel {
+struct alignas(2 * sizeof(float)) Voxel {
   float distance{1.0F};
   float weight{0.0F};
 
@@ -22,29 +21,31 @@ struct Voxel {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Voxel fused(float observed,
                                                      float observation_weight,
                                                      float max_weight) const {
-    return {.distance = weighted_average(distance, weight, observed,
-                                         observation_weight),
-            .weight = std::min(weight + observation_weight, max_weight)};
+    float weighted_avg =
+        weighted_average(distance, weight, observed, observation_weight);
+    float truncated_weight = std::min(weight + observation_weight, max_weight);
+
+    return {.distance = weighted_avg, .weight = truncated_weight};
   }
 };
 
-struct ColorVoxel {
+struct alignas(4 * sizeof(float)) ColorVoxel {
   Vec3f color{};
   float weight{0.0F};
 
   // The accumulated weight saturates at max_weight. Weighted average.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE ColorVoxel fused(
       const Vec3f& observed, float observation_weight, float max_weight) const {
-    return {
-        .color = weighted_average(color, weight, observed, observation_weight),
-        .weight = std::min(weight + observation_weight, max_weight)};
+    Vec3f weighted_avg =
+        weighted_average(color, weight, observed, observation_weight);
+    float truncated_weight = std::min(weight + observation_weight, max_weight);
+
+    return {.color = weighted_avg, .weight = truncated_weight};
   }
 };
 
-// Defaults for the TSDF integration and raycast options structs below; the
-// shared sensor defaults (depth scale and range) live in rgbd.hpp.
-inline constexpr float kDefaultTsdfMaxWeight = 196.0F;
-inline constexpr float kDefaultTruncationDistanceScale = 0.01F;
+static_assert(sizeof(Voxel) == 2 * sizeof(float) &&
+              sizeof(ColorVoxel) == 4 * sizeof(float));
 
 struct SurfaceMaps {
   image_proc::Vector3fImage points;
@@ -84,52 +85,34 @@ using ConstDeviceSurfaceMapsView = SurfaceMapsView<MemorySpace::kDevice, true>;
                                   .colors = maps.colors.view()};
 }
 
-struct TsdfIntegrationOptions {
-  float depth_scale{kDefaultTumDepthScale};
-  float observation_weight{1.0F};
-  float max_weight{kDefaultTsdfMaxWeight};
-  float min_depth{kDefaultMinDepthMeters};
-  float max_depth{kDefaultMaxDepthMeters};
-  bool projective_distance{true};
-  bool distance_scaled_truncation{false};
-  float truncation_distance_scale{kDefaultTruncationDistanceScale};
-  bool view_angle_weighting{true};
-};
+// Voxels are sampled at their center, half a cell from the lower corner.
+inline constexpr float kVoxelCenterOffset = 0.5F;
 
-// One depth-camera observation to fuse into the volume: the depth image is
-// required, colour and live normals are optional (normals enable view-angle
-// observation weighting). world_to_camera maps world points into the camera
-// frame.
-struct DepthFrame {
-  const image_proc::DepthImage* depth{};
-  const image_proc::ColorImage* color{};
-  const image_proc::Vector3fImage* normals{};
-  CameraIntrinsics intrinsics{};
-  Eigen::Matrix4f world_to_camera{Eigen::Matrix4f::Identity()};
-};
+struct VolumeGeometry {
+  Size3 resolution{};
+  float voxel_size{};
+  Vec3f origin{};
+  float truncation_distance{};
 
-// TSDF sampling policy
-enum class CornerPolicy : std::uint8_t {
-  kSkipMissing,
-  kRequireAll,
-};
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t voxel_count() const {
+    return resolution.x * resolution.y * resolution.z;
+  }
 
-struct RaycastOptions {
-  float min_depth{kDefaultMinDepthMeters};
-  float max_depth{kDefaultMaxDepthMeters};
-  float step_scale{1.0F};
-  CornerPolicy tsdf_corner_policy{CornerPolicy::kSkipMissing};
-};
+  // World-space center of voxel (x, y, z).
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Vec3f
+  cell_center(std::size_t x, std::size_t y, std::size_t z) const {
+    return origin + ((make_vec3f(x, y, z) + make_vec3f(kVoxelCenterOffset,
+                                                       kVoxelCenterOffset,
+                                                       kVoxelCenterOffset)) *
+                     voxel_size);
+  }
 
-struct RaycastCamera {
-  CameraIntrinsics intrinsics{};
-  std::size_t width{};
-  std::size_t height{};
-  Eigen::Matrix4f camera_to_world{Eigen::Matrix4f::Identity()};
+  friend bool operator==(const VolumeGeometry&,
+                         const VolumeGeometry&) = default;
 };
 
 // A view into a voxel volume, with pointer semantics: constness is
-// shallow(std::span)
+// shallow(std::span).
 template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false>
 struct VolumeView {
   template <typename T>
@@ -137,16 +120,38 @@ struct VolumeView {
 
   Pointee<Voxel>* voxels{};
   Pointee<ColorVoxel>* colors{};
-  Size3 resolution{};
-  float voxel_size{};
-  Vec3f origin{};
-  float truncation_distance{};
+  VolumeGeometry geometry{};
 
   static constexpr MemorySpace kMemorySpace = Space;
 
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Size3& resolution() const {
+    return geometry.resolution;
+  }
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE float voxel_size() const {
+    return geometry.voxel_size;
+  }
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Vec3f& origin() const {
+    return geometry.origin;
+  }
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE float truncation_distance() const {
+    return geometry.truncation_distance;
+  }
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t voxel_count() const {
+    return geometry.voxel_count();
+  }
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Vec3f
+  cell_center(std::size_t x, std::size_t y, std::size_t z) const {
+    return geometry.cell_center(x, y, z);
+  }
+
+  // Flat element access for coordinate-free sweeps
+  [[nodiscard]] std::span<Pointee<Voxel>> voxel_span() const {
+    return std::span<Pointee<Voxel>>{voxels, voxel_count()};
+  }
+
   [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
       std::size_t x, std::size_t y, std::size_t z) const {
-    return (((z * resolution.y) + y) * resolution.x) + x;
+    return (((z * geometry.resolution.y) + y) * geometry.resolution.x) + x;
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<Voxel>& voxel_at(
@@ -158,6 +163,16 @@ struct VolumeView {
       std::size_t x, std::size_t y, std::size_t z) const {
     return colors[index(x, y, z)];
   }
+
+  // Mutable views convert to read-only views implicitly, like std::span.
+  template <bool TargetConst = true>
+    requires(TargetConst && !IsConst)
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+  // NOLINTNEXTLINE(hicpp-explicit-conversions)
+  operator VolumeView<Space, TargetConst>() const {
+    return VolumeView<Space, TargetConst>{
+        .voxels = voxels, .colors = colors, .geometry = geometry};
+  }
 };
 
 using HostVolumeView = VolumeView<MemorySpace::kHost>;
@@ -165,26 +180,56 @@ using DeviceVolumeView = VolumeView<MemorySpace::kDevice>;
 using ConstHostVolumeView = VolumeView<MemorySpace::kHost, true>;
 using ConstDeviceVolumeView = VolumeView<MemorySpace::kDevice, true>;
 
-class Volume {
- public:
-  Volume(kinectfusion::Vector3s resolution, float voxel_size,
-         const Vec3f& origin, float truncation_distance)
-      : resolution_(std::move(resolution)),
-        voxel_size_(voxel_size),
-        origin_(origin),
-        truncation_distance_(truncation_distance),
-        voxels_(voxel_count()),
-        colors_(voxel_count()) {}
+//  A Buffer must own its elements and expose `data()`
+template <MemorySpace Space>
+struct SpaceTraits;
 
-  Volume(const kinectfusion::Vector3s& resolution, float voxel_size,
-         const Eigen::Vector3f& origin, float truncation_distance)
-      : Volume(resolution, voxel_size, from_eigen(origin),
-               truncation_distance) {}
+template <>
+struct SpaceTraits<MemorySpace::kHost> {
+  template <typename T>
+  using Buffer = std::vector<T>;
 
-  [[nodiscard]] kinectfusion::Vector3s resolution() const {
-    return resolution_;
+  template <typename T>
+  [[nodiscard]] static Buffer<T> allocate(std::size_t count) {
+    return Buffer<T>(count);
   }
-  [[nodiscard]] float voxel_size() const { return voxel_size_; }
+};
+
+// Each specialization is defined in the translation unit that can compile it
+template <MemorySpace To, MemorySpace From>
+struct Transfer;
+
+template <>
+struct Transfer<MemorySpace::kHost, MemorySpace::kHost> {
+  static void copy(HostVolumeView destination, ConstHostVolumeView source);
+};
+
+// TSDF voxel grid storage in one memory space: owns the buffers, hands out
+// views, and copies across spaces on explicit request only. All sampling and
+// integration logic lives with the classes operating on views.
+template <MemorySpace Space>
+class BasicVolume {
+ public:
+  // Throws std::invalid_argument
+  explicit BasicVolume(const VolumeGeometry& geometry)
+      : geometry_(validated(geometry)),
+        voxels_(SpaceTraits<Space>::template allocate<Voxel>(
+            geometry_.voxel_count())),
+        colors_(SpaceTraits<Space>::template allocate<ColorVoxel>(
+            geometry_.voxel_count())) {}
+
+  [[nodiscard]] const VolumeGeometry& geometry() const { return geometry_; }
+
+  // Explicit cross-space copy;
+  // The only place volume data ever moves between memory spaces.
+  // Throws std::invalid_argument on geometry mismatch
+  // TSDF data is only meaningful under the geometry it was integrated with.
+  template <MemorySpace From>
+  void copy_from(const BasicVolume<From>& source) {
+    require(geometry_ == source.geometry(),
+            "Volume copy requires matching geometry");
+    Transfer<Space, From>::copy(view(), source.view());
+  }
 
   [[nodiscard]] std::size_t observed_voxel_count() const {
     std::size_t count = 0;
@@ -196,9 +241,11 @@ class Volume {
     return count;
   }
 
-  [[nodiscard]] HostVolumeView view() { return view_as<HostVolumeView>(*this); }
-  [[nodiscard]] ConstHostVolumeView view() const {
-    return view_as<ConstHostVolumeView>(*this);
+  [[nodiscard]] VolumeView<Space> view() {
+    return view_as<VolumeView<Space>>(*this);
+  }
+  [[nodiscard]] VolumeView<Space, true> view() const {
+    return view_as<VolumeView<Space, true>>(*this);
   }
 
  private:
@@ -207,49 +254,27 @@ class Volume {
   [[nodiscard]] static ViewT view_as(Self& self) {
     return ViewT{.voxels = self.voxels_.data(),
                  .colors = self.colors_.data(),
-                 .resolution = to_size3(self.resolution_),
-                 .voxel_size = self.voxel_size_,
-                 .origin = self.origin_,
-                 .truncation_distance = self.truncation_distance_};
+                 .geometry = self.geometry_};
   }
 
-  [[nodiscard]] std::size_t voxel_count() const {
-    return resolution_.x() * resolution_.y() * resolution_.z();
+  [[nodiscard]] static VolumeGeometry validated(VolumeGeometry geometry) {
+    require(geometry.resolution.x > 0 && geometry.resolution.y > 0 &&
+                geometry.resolution.z > 0,
+            "Volume resolution must be positive");
+    require(geometry.voxel_size > 0.0F, "Voxel size must be positive");
+    require(geometry.truncation_distance > 0.0F,
+            "Truncation distance must be positive");
+    require(all_finite(geometry.origin), "Volume origin must be finite");
+    return geometry;
   }
 
-  kinectfusion::Vector3s resolution_;
-  float voxel_size_{};
-  Vec3f origin_;
-  float truncation_distance_{};
-  std::vector<Voxel> voxels_;
-  std::vector<ColorVoxel> colors_;
+  VolumeGeometry geometry_;
+  typename SpaceTraits<Space>::template Buffer<Voxel> voxels_;
+  typename SpaceTraits<Space>::template Buffer<ColorVoxel> colors_;
 };
 
-class TsdfIntegrator {
- public:
-  // Throws std::invalid_argument
-  explicit TsdfIntegrator(TsdfIntegrationOptions options = {});
-
-  // Fuses one depth-camera observation into the volume.
-  void integrate(Volume& volume, const DepthFrame& frame) const;
-
- private:
-  TsdfIntegrationOptions options_;
-};
-
-class Raycaster {
- public:
-  // Throws std::invalid_argument
-  explicit Raycaster(RaycastOptions options = {});
-
-  // Renders the zero-crossing surface seen from `camera` into per-pixel
-  // point, normal and color maps (non-finite points where no surface is hit).
-  [[nodiscard]] SurfaceMaps raycast(const Volume& volume,
-                                    const RaycastCamera& camera) const;
-
- private:
-  RaycastOptions options_;
-};
+using HostVolume = BasicVolume<MemorySpace::kHost>;
+using DeviceVolume = BasicVolume<MemorySpace::kDevice>;
 
 }  // namespace kinectfusion
 

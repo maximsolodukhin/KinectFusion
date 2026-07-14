@@ -6,19 +6,12 @@
 #include <cstdint>
 #include <expected>
 #include <kinectfusion/depth_processing.hpp>
-#include <optional>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <variant>
 
 namespace kinectfusion {
 
-// Degrees of freedom of the linearised point-plane ICP system (three rotation
-// + three translation parameters).
-inline constexpr int kIcpDof = 6;
-
 inline constexpr std::size_t kDefaultMinIcpCorrespondences = 64;
-inline constexpr float kDefaultMaxIcpPointDistanceMeters = 0.05F;
-// cos(15 degrees); reject correspondences whose normals disagree by more.
-inline constexpr float kDefaultMinIcpNormalDot = 0.9659258F;
 inline constexpr float kDefaultMinIcpUpdateTranslationMeters = 1.0e-5F;
 inline constexpr float kDefaultMinIcpUpdateRotationRadians = 1.0e-5F;
 inline constexpr float kDefaultMaxIcpUpdateTranslationMeters = 0.15F;
@@ -67,11 +60,13 @@ struct IcpOutcome {
 // pose to start optimising from, and the iteration budget for this pyramid
 // level.
 struct TrackingRequest {
+  using TransformMat = Eigen::Matrix4f;
+
   ConstHostVertexNormalMapsView live{};
   ConstHostVertexNormalMapsView model{};
   CameraIntrinsics model_intrinsics{};
-  Eigen::Matrix4f model_camera_to_world{Eigen::Matrix4f::Identity()};
-  Eigen::Matrix4f initial_camera_to_world{Eigen::Matrix4f::Identity()};
+  TransformMat model_camera_to_world{TransformMat::Identity()};
+  TransformMat initial_camera_to_world{TransformMat::Identity()};
   unsigned int iterations{1};
 };
 
@@ -90,6 +85,9 @@ struct ProjectiveIcpOptions {
   float max_condition_number{kDefaultMaxIcpConditionNumber};
 };
 
+// Host driver
+// Per-iteration correspondence sweep via CorrespondenceSearch<kHost>, then the
+// 6x6 stability check and solve.
 class ProjectiveIcpTracker {
  public:
   explicit ProjectiveIcpTracker(ProjectiveIcpOptions options = {})
@@ -98,32 +96,6 @@ class ProjectiveIcpTracker {
   [[nodiscard]] IcpOutcome estimate_pose(const TrackingRequest& request) const;
 
  private:
-  // Accumulated point-plane normal equations (J^T J and J^T r) plus the
-  // correspondence statistics the diagnostics report.
-  struct NormalEquations {
-    std::size_t count{};
-    Eigen::Matrix<float, kIcpDof, kIcpDof> matrix{
-        Eigen::Matrix<float, kIcpDof, kIcpDof>::Zero()};
-    Eigen::Matrix<float, kIcpDof, 1> rhs{
-        Eigen::Matrix<float, kIcpDof, 1>::Zero()};
-    float distance_sum{};
-  };
-
-  // One accepted live-to-model correspondence, linearised for the point-plane
-  // system: `jacobian` is its 6-DOF row, `residual` the point-plane error.
-  struct Correspondence {
-    Eigen::Matrix<float, kIcpDof, 1> jacobian;
-    float residual;
-    float distance;
-  };
-
-  // Transforms shared by every pixel within one Gauss-Newton iteration.
-  struct IterationTransforms {
-    Eigen::Matrix4f model_world_to_camera{Eigen::Matrix4f::Identity()};
-    Eigen::Matrix3f rotation{Eigen::Matrix3f::Identity()};
-    Eigen::Vector3f translation{Eigen::Vector3f::Zero()};
-  };
-
   struct SystemStability {
     bool stable{};
     float min_eigenvalue{};
@@ -131,29 +103,23 @@ class ProjectiveIcpTracker {
   };
 
   struct Increment {
-    Eigen::Matrix4f transform{Eigen::Matrix4f::Identity()};
+    // rigid body trasnform
+    using TransformMat = Eigen::Matrix4f;
+    TransformMat transform{TransformMat::Identity()};
     float update_translation{};
     float update_rotation{};
     bool solved{};
   };
 
-  [[nodiscard]] NormalEquations find_correspondences(
+  [[nodiscard]] IcpNormalEquations find_correspondences(
       const TrackingRequest& request,
-      const IterationTransforms& transforms) const;
-
-  // Projects one live vertex into the model frame and gates the surface pair
-  // it lands on; nullopt when the projection misses the model image, the
-  // model pixel is unmeasured, or the distance/normal checks reject the pair.
-  [[nodiscard]] std::optional<Correspondence> match_point(
-      const Vec3f& live_vertex, const Vec3f& live_normal,
-      const TrackingRequest& request,
-      const IterationTransforms& transforms) const;
+      const IcpIterationTransforms& transforms) const;
 
   [[nodiscard]] SystemStability check_system_stability(
-      const NormalEquations& equations) const;
+      const IcpNormalEquations& equations) const;
 
   [[nodiscard]] Increment solve_increment(
-      const NormalEquations& equations) const;
+      const IcpNormalEquations& equations) const;
 
   ProjectiveIcpOptions options_;
 };

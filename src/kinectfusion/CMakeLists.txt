@@ -33,6 +33,16 @@ if(NOT BUILD_SHARED_LIBS)
 endif()
 
 # each component adds its sources via target_sources()
-target_sources(kinectfusion PRIVATE depth_processing.cpp icp_optimizer.cpp virtual_sensor.cpp volume.cpp)
+target_sources(
+  kinectfusion
+  PRIVATE comparison.cpp
+          depth_processing.cpp
+          icp_optimizer.cpp
+          pipeline.cpp
+          pipeline_set.cpp
+          raycasting.cpp
+          tsdf_integration.cpp
+          virtual_sensor.cpp
+          volume.cpp)
 
 add_subdirectory(image_proc)

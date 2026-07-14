@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/vector.hpp>
+#include <type_traits>
 #include <vector>
 
 namespace kinectfusion::image_proc {
@@ -31,6 +32,17 @@ struct ImageView {
     // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return data[(y * width) + x];
     // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  }
+
+  // Mutable views convert to read-only views implicitly, like std::span
+  // (and like VolumeView). A member template so the const instantiation
+  // never declares a self-conversion (nvcc warns on those).
+  template <typename T = PixelT>
+    requires(std::is_same_v<T, PixelT> && !std::is_const_v<T>)
+  // NOLINTNEXTLINE(hicpp-explicit-conversions)
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE operator ImageView<const T, Space>()
+      const {
+    return {.data = data, .width = width, .height = height};
   }
 };
 

@@ -68,6 +68,56 @@ Single frame only (just integrate + raycast, no tracking):
 - The volume is fixed in world space at the first frame's pose; keep sequences
   short enough that the camera stays inside it.
 
+### Ablation pipelines
+
+`--pipelines <file.toml>` runs several independently configured TSDF pipelines
+on the same input frames and compares each against a reference pipeline:
+
+```bash
+./build/release/src/app/kinectfusion data/rgbd_dataset_freiburg1_xyz --frames 5 \
+  --volume-resolution 128 --voxel-size 0.02 --volume-camera-margin 0.5 \
+  --pipelines configs/ablation_example.toml --output-dir outputs
+```
+
+Per-frame deviation statistics against the reference are logged and appended to
+`<output-dir>/ablation_stats.csv`; each pipeline writes its raycasts to
+`<output-dir>/<pipeline-name>/`.
+
+The TOML file has two optional top-level keys and one `[[pipeline]]` table per
+pipeline:
+
+```toml
+reference = "baseline"     # defaults to the first pipeline
+compare-every-n-frames = 1 # defaults to --compare-every; <= 0 disables
+
+[[pipeline]]
+name = "baseline"
+tsdf-variant = "angle-weighted"
+
+[[pipeline]]
+name = "classic"
+tsdf-variant = "classic"
+```
+
+Every pipeline starts from the CLI-derived configuration and overrides only
+what it ablates:
+
+| Key                          | Type   | Meaning                                            |
+| ---------------------------- | ------ | -------------------------------------------------- |
+| `name`                       | string | Required, unique; names the output subdirectory    |
+| `space`                      | string | `"cpu"` or `"cuda"` (falls back to cpu with a warning) |
+| `tsdf-variant`               | string | `"angle-weighted"` or `"classic"`                  |
+| `projective-distance`        | bool   | Projective instead of euclidean surface distance   |
+| `distance-scaled-truncation` | bool   | Scale truncation with measured depth               |
+| `truncation-distance-scale`  | float  | Factor for the scaled truncation                   |
+| `observation-weight`         | float  | Weight of one observation                          |
+| `max-weight`                 | float  | Running-average weight cap                         |
+
+The volume geometry is deliberately not overridable — it stays global (CLI
+flags) so cross-pipeline comparison is defined on identical grids. Unknown keys
+throw `std::invalid_argument`: ablation configs fail loud rather than silently
+running a default.
+
 ## Usage with Docker
 
 The repo's `compose.yaml` defines a `kinectfusion` service that builds the

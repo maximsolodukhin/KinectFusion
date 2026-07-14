@@ -38,17 +38,28 @@ struct CameraIntrinsics {
     return intrinsics;
   }
 
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Vec2f
+  project(const Vec3f& camera_point) const {
+    return Vec2f{.x = (fx * camera_point.x / camera_point.z) + cx,
+                 .y = (fy * camera_point.y / camera_point.z) + cy};
+  }
+
   [[nodiscard]] Eigen::Vector2f project(
       const Eigen::Vector3f& camera_point) const {
-    return Eigen::Vector2f{(fx * camera_point.x() / camera_point.z()) + cx,
-                           (fy * camera_point.y() / camera_point.z()) + cy};
+    const Vec2f pixel = project(from_eigen(camera_point));
+    return Eigen::Vector2f{pixel.x, pixel.y};
   }
 
   // Back-projects pixel (x, y) at depth z into a camera-space point.
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Vec3f back_project(const Vec2f& pixel,
+                                                            float depth) const {
+    return make_vec3f((pixel.x - cx) * depth / fx, (pixel.y - cy) * depth / fy,
+                      depth);
+  }
+
   [[nodiscard]] Eigen::Vector3f back_project(const Eigen::Vector2f& pixel,
                                              float depth) const {
-    return Eigen::Vector3f{(pixel.x() - cx) * depth / fx,
-                           (pixel.y() - cy) * depth / fy, depth};
+    return to_eigen(back_project(Vec2f{.x = pixel.x(), .y = pixel.y()}, depth));
   }
 
   // Intrinsics for pyramid level `level`, where each level halves the

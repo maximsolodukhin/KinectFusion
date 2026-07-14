@@ -4,11 +4,18 @@
 #include <Eigen/Core>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/pipeline.hpp>
+#include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
+#include <map>
 #include <string>
+
+#include "pipeline_config.hpp"
 
 namespace app {
 namespace {
@@ -29,11 +36,38 @@ kinectfusion::Vec3f AppOptions::volume_origin() const {
       .x = -half_extent, .y = -half_extent, .z = -volume_camera_margin};
 }
 
-kinectfusion::Volume AppOptions::make_volume() const {
-  return kinectfusion::Volume{
-      kinectfusion::Vector3s{volume_resolution, volume_resolution,
-                             volume_resolution},
-      voxel_size, volume_origin(), truncation_distance};
+kinectfusion::VolumeGeometry AppOptions::volume_geometry() const {
+  return kinectfusion::VolumeGeometry{
+      .resolution = {.x = volume_resolution,
+                     .y = volume_resolution,
+                     .z = volume_resolution},
+      .voxel_size = voxel_size,
+      .origin = volume_origin(),
+      .truncation_distance = truncation_distance};
+}
+
+kinectfusion::TsdfRuleVariant AppOptions::tsdf_rule() const {
+  return tsdf_rule_from_name(tsdf_variant);
+}
+
+kinectfusion::PipelineConfig AppOptions::pipeline_config() const {
+  return kinectfusion::PipelineConfig{.name = "baseline",
+                                      .space = space,
+                                      .tsdf_rule = tsdf_rule(),
+                                      .integration = tsdf_options(),
+                                      .raycast = raycast_options(),
+                                      .volume = volume_geometry()};
+}
+
+kinectfusion::PipelineSetConfig AppOptions::pipeline_set_config() const {
+  if (pipelines_config.empty()) {
+    return kinectfusion::PipelineSetConfig{
+        .pipelines = {pipeline_config()},
+        .reference = {},
+        .compare_every_n_frames = compare_every_n_frames};
+  }
+  return parse_pipeline_set(pipelines_config, pipeline_config(),
+                            compare_every_n_frames);
 }
 
 kinectfusion::RaycastOptions AppOptions::raycast_options() const {
@@ -75,8 +109,7 @@ kinectfusion::TsdfIntegrationOptions AppOptions::tsdf_options() const {
       .max_depth = max_depth,
       .projective_distance = projective_tsdf_distance,
       .distance_scaled_truncation = distance_scaled_truncation,
-      .truncation_distance_scale = truncation_distance_scale,
-      .view_angle_weighting = view_angle_weighting};
+      .truncation_distance_scale = truncation_distance_scale};
 }
 
 kinectfusion::ProjectiveIcpOptions AppOptions::icp_options() const {
@@ -152,9 +185,25 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_option("--truncation-distance-scale",
                  app_options.truncation_distance_scale,
                  "Linear TSDF truncation support increase per meter.");
-  app.add_flag("--view-angle-weighting,!--no-view-angle-weighting",
-               app_options.view_angle_weighting,
-               "Weight TSDF observations by view angle and depth.");
+  app.add_option("--tsdf-variant", app_options.tsdf_variant,
+                 "TSDF update rule: 'angle-weighted' (cos(theta)/depth "
+                 "observation weighting) or 'classic' (constant weight).")
+      ->check(CLI::IsMember({"angle-weighted", "classic"}));
+  app.add_option("--space", app_options.space,
+                 "Memory space to run the pipeline in ('cpu' or 'cuda'; "
+                 "falls back to cpu with a warning when unavailable).")
+      ->transform(CLI::CheckedTransformer(
+          std::map<std::string, kinectfusion::MemorySpace>{
+              {"cpu", kinectfusion::MemorySpace::kHost},
+              {"cuda", kinectfusion::MemorySpace::kDevice}},
+          CLI::ignore_case));
+  app.add_option(
+      "--pipelines", app_options.pipelines_config,
+      "TOML file describing an ablation pipeline set ([[pipeline]] tables); "
+      "CLI options provide the per-pipeline defaults.");
+  app.add_option(
+      "--compare-every", app_options.compare_every_n_frames,
+      "Frame cadence for pipeline deviation stats (<= 0 disables them).");
   app.add_flag("--bilateral-filter,!--no-bilateral-filter",
                app_options.bilateral_filter,
                "Enable bilateral depth filtering for tracking.");

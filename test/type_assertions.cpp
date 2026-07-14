@@ -24,6 +24,11 @@ static_assert(std::same_as<decltype(std::declval<DepthImage&>().view()),
                            HostImageView<std::uint16_t>>);
 static_assert(std::same_as<decltype(std::declval<const DepthImage&>().view()),
                            HostImageView<const std::uint16_t>>);
+// Mutable views convert to read-only views, like std::span.
+static_assert(std::convertible_to<HostImageView<std::uint16_t>,
+                                  HostImageView<const std::uint16_t>>);
+static_assert(!std::convertible_to<HostImageView<const std::uint16_t>,
+                                   HostImageView<std::uint16_t>>);
 
 using HostLevel = DepthProcessingLevel<MemorySpace::kHost>;
 static_assert(HostLevel::depth_image_type::kMemorySpace == MemorySpace::kHost);

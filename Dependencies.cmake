@@ -48,7 +48,11 @@ function(kinectfusion_setup_ceres)
       "PROVIDE_UNINSTALL_TARGET OFF"
       "BUILD_TESTING OFF"
       "BUILD_EXAMPLES OFF"
-      "BUILD_BENCHMARKS OFF")
+      "BUILD_BENCHMARKS OFF"
+      # Ceres must not enable_language(CUDA) behind our back: its compiler
+      # detection grabs whatever nvcc it finds (system CUDA 12 vs the real
+      # toolkit) and we don't use its CUDA solvers anyway.
+      "USE_CUDA OFF")
   endif()
   unset(CMAKE_SKIP_INSTALL_RULES)
 
@@ -112,6 +116,18 @@ function(kinectfusion_setup_dependencies)
       2.6.1
       GITHUB_REPOSITORY
       "CLIUtils/CLI11"
+      SYSTEM
+      YES)
+  endif()
+
+  if(NOT TARGET tomlplusplus::tomlplusplus)
+    cpmaddpackage(
+      NAME
+      tomlplusplus
+      VERSION
+      3.4.0
+      GITHUB_REPOSITORY
+      "marzer/tomlplusplus"
       SYSTEM
       YES)
   endif()

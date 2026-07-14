@@ -4,10 +4,14 @@
 #include <Eigen/Core>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
 
 #include "app_options.hpp"
+#include "frame_output.hpp"
 
 namespace app {
 
@@ -25,25 +29,26 @@ class Reconstruction {
   [[nodiscard]] bool initialize();
   void process_frame();
   [[nodiscard]] kinectfusion::IcpOutcome track_pose(
-      const SurfacePyramid& live_pyramid) const;
+      const SurfacePyramid& live_pyramid);
   void integrate_tracked_frame(const SurfacePyramid& live_pyramid,
                                const kinectfusion::IcpOutcome& tracking);
-  // Fuses the current sensor frame into the volume at the tracked pose.
+  // Fuses the current sensor frame into every pipeline at the tracked pose.
   void integrate_frame(const kinectfusion::image_proc::Vector3fImage* normals);
   void relocalize(const kinectfusion::IcpOutcome& tracking);
   [[nodiscard]] SurfacePyramid build_pyramid() const;
   [[nodiscard]] kinectfusion::SurfaceMaps raycast_model(
-      const Eigen::Matrix4f& camera_to_world, unsigned int level) const;
+      const Eigen::Matrix4f& camera_to_world, unsigned int level);
+  void render_model_outputs();
+  void log_pipelines() const;
   void log_frame_loaded() const;
 
   AppOptions options_;
+  FrameOutput frame_output_;
   kinectfusion::VirtualSensor sensor_;
-  kinectfusion::Volume volume_;
   kinectfusion::ProjectiveIcpTracker tracker_;
   kinectfusion::DepthProcessor<kinectfusion::MemorySpace::kHost>
       depth_processor_;
-  kinectfusion::TsdfIntegrator integrator_;
-  kinectfusion::Raycaster raycaster_;
+  kinectfusion::PipelineSet pipelines_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
   kinectfusion::SurfaceMaps model_maps_;
   int processed_frames_{1};

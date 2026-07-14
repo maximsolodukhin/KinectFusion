@@ -6,7 +6,7 @@ endif()
 option(KINECTFUSION_ENABLE_LOGGING "Enable KinectFusion progress logging" ${KINECTFUSION_ENABLE_LOGGING_DEFAULT})
 
 add_executable(kinectfusion_app main.cpp app_options.cpp frame_output.cpp
-                                reconstruction.cpp)
+                                pipeline_config.cpp reconstruction.cpp)
 
 set_target_properties(kinectfusion_app PROPERTIES OUTPUT_NAME kinectfusion)
 
@@ -16,7 +16,8 @@ target_link_libraries(
           kinectfusion::kinectfusion_warnings
           kinectfusion::kinectfusion
           CLI11::CLI11
-          spdlog::spdlog)
+          spdlog::spdlog
+          tomlplusplus::tomlplusplus)
 
 target_compile_definitions(kinectfusion_app PRIVATE KINECTFUSION_VERSION="${PROJECT_VERSION}")
 

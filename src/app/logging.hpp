@@ -3,8 +3,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <format>
+#include <iterator>
+#include <kinectfusion/comparison.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/pipeline_set.hpp>
 #include <string_view>
 
 #ifdef KINECTFUSION_ENABLE_LOGGING
@@ -52,6 +57,88 @@ struct std::formatter<kinectfusion::IcpDiagnostics>
         diagnostics.correspondences, diagnostics.mean_point_distance,
         diagnostics.min_system_eigenvalue, diagnostics.condition_number,
         diagnostics.update_translation, diagnostics.update_rotation);
+  }
+};
+
+namespace app {
+
+// {:csv} selects bare comma-separated values instead of labeled fields.
+struct CsvSpecFormatter {
+  bool csv{false};
+
+  constexpr auto parse(std::format_parse_context& ctx) {
+    const std::string_view remainder{ctx.begin(), ctx.end()};
+    const auto length = std::min(remainder.find('}'), remainder.size());
+    const std::string_view spec = remainder.substr(0, length);
+    if (!spec.empty()) {
+      if (spec != "csv") {
+        throw std::format_error("expected ':csv'");
+      }
+      csv = true;
+    }
+    return std::next(ctx.begin(), static_cast<std::ptrdiff_t>(length));
+  }
+};
+
+}  // namespace app
+
+template <>
+struct std::formatter<kinectfusion::VolumeComparison>
+    : app::CsvSpecFormatter {
+  auto format(const kinectfusion::VolumeComparison& comparison,
+              std::format_context& ctx) const {
+    return std::vformat_to(
+        ctx.out(),
+        csv ? "{},{},{},{},{},{}"
+            : "compared_voxels={} only_pipeline={} only_reference={} "
+              "max_distance_delta={} mean_distance_delta={} "
+              "max_weight_delta={}",
+        std::make_format_args(
+            comparison.compared_voxels, comparison.only_primary,
+            comparison.only_reference, comparison.max_distance_delta,
+            comparison.mean_distance_delta, comparison.max_weight_delta));
+  }
+};
+
+template <>
+struct std::formatter<kinectfusion::SurfaceMapsComparison>
+    : app::CsvSpecFormatter {
+  auto format(const kinectfusion::SurfaceMapsComparison& comparison,
+              std::format_context& ctx) const {
+    return std::vformat_to(
+        ctx.out(),
+        csv ? "{},{},{},{},{},{},{}"
+            : "compared_pixels={} only_pipeline={} only_reference={} "
+              "max_point_distance={} mean_point_distance={} "
+              "max_normal_angle={} mean_normal_angle={}",
+        std::make_format_args(
+            comparison.compared_pixels, comparison.only_primary,
+            comparison.only_reference, comparison.max_point_distance,
+            comparison.mean_point_distance, comparison.max_normal_angle,
+            comparison.mean_normal_angle));
+  }
+};
+
+template <>
+struct std::formatter<kinectfusion::PipelineComparison>
+    : app::CsvSpecFormatter {
+  auto format(const kinectfusion::PipelineComparison& comparison,
+              std::format_context& ctx) const {
+    if (csv) {
+      auto out = std::format_to(ctx.out(), "{},{:csv},", comparison.name,
+                                comparison.volume);
+      if (comparison.surface) {
+        return std::format_to(out, "{:csv}", *comparison.surface);
+      }
+      return std::format_to(out, ",,,,,,");
+    }
+    auto out = std::format_to(ctx.out(), "pipeline '{}' vs reference: "
+                                         "volume[{}]",
+                              comparison.name, comparison.volume);
+    if (comparison.surface) {
+      return std::format_to(out, " surface[{}]", *comparison.surface);
+    }
+    return out;
   }
 };
 

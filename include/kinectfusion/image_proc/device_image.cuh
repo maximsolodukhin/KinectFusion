@@ -1,26 +1,22 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_DEVICE_IMAGE_CUH
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_DEVICE_IMAGE_CUH
 
-#include <cuda_runtime_api.h>
-
 #include <cstddef>
-#include <kinectfusion/cuda/check.cuh>
+#include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/image_proc/image.hpp>
 #include <limits>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 
 namespace kinectfusion::image_proc {
 
-// Device specialization of Image. It is move-only because copying device
-// storage must be explicit about direction and synchronization. Pixels are
-// zero-initialized on construction, matching the host specialization.
+// Device specialization of Image: 2D pixel semantics over a
+// cuda::DeviceBuffer, which owns the allocation and the transfers. It is
+// move-only because copying device storage must be explicit about direction
+// and synchronization. Pixels are zero-initialized on construction, matching
+// the host specialization.
 template <typename PixelT>
 class Image<PixelT, MemorySpace::kDevice> {
-  static_assert(std::is_trivially_copyable_v<PixelT>,
-                "Device image pixels must be trivially copyable");
-
  public:
   using value_type = PixelT;
 
@@ -29,31 +25,11 @@ class Image<PixelT, MemorySpace::kDevice> {
   Image() = default;
 
   Image(std::size_t width, std::size_t height)
-      : width_(width), height_(height) {
-    if (height_ != 0U &&
-        width_ > std::numeric_limits<std::size_t>::max() / height_) {
-      throw std::overflow_error("Device image dimensions overflow");
-    }
-    const std::size_t pixel_count = width_ * height_;
-    if (pixel_count >
-        std::numeric_limits<std::size_t>::max() / sizeof(PixelT)) {
-      throw std::overflow_error("Device image allocation size overflows");
-    }
-    if (pixel_count != 0U) {
-      cuda::check(cudaMalloc(reinterpret_cast<void**>(&data_),
-                             pixel_count * sizeof(PixelT)),
-                  "cudaMalloc(DeviceImage)");
-      try {
-        fill_zero();
-      } catch (...) {
-        // The destructor does not run when a constructor throws.
-        release();
-        throw;
-      }
-    }
-  }
+      : width_(width),
+        height_(height),
+        buffer_(checked_pixel_count(width, height)) {}
 
-  ~Image() { release(); }
+  ~Image() = default;
 
   Image(const Image&) = delete;
   Image& operator=(const Image&) = delete;
@@ -69,61 +45,49 @@ class Image<PixelT, MemorySpace::kDevice> {
   }
 
   [[nodiscard]] DeviceImageView<PixelT> view() noexcept {
-    return {.data = data_, .width = width_, .height = height_};
+    return {.data = buffer_.data(), .width = width_, .height = height_};
   }
 
   [[nodiscard]] DeviceImageView<const PixelT> view() const noexcept {
-    return {.data = data_, .width = width_, .height = height_};
+    return {.data = buffer_.data(), .width = width_, .height = height_};
   }
 
   [[nodiscard]] std::size_t width() const noexcept { return width_; }
   [[nodiscard]] std::size_t height() const noexcept { return height_; }
-  [[nodiscard]] bool empty() const noexcept { return data_ == nullptr; }
+  [[nodiscard]] bool empty() const noexcept { return buffer_.empty(); }
 
   void copy_from(HostImageView<const PixelT> source) {
     require_same_dimensions(source.width, source.height);
-    if (!empty()) {
-      cuda::check(
-          cudaMemcpy(data_, source.data, size_bytes(), cudaMemcpyHostToDevice),
-          "cudaMemcpy(DeviceImage host to device)");
-    }
+    buffer_.copy_from_host(source.data, buffer_.size());
   }
 
   void copy_from(DeviceImageView<const PixelT> source) {
     require_same_dimensions(source.width, source.height);
-    if (!empty()) {
-      cuda::check(cudaMemcpy(data_, source.data, size_bytes(),
-                             cudaMemcpyDeviceToDevice),
-                  "cudaMemcpy(DeviceImage device to device)");
-    }
+    buffer_.copy_from_device(source.data, buffer_.size());
   }
 
   void copy_to(HostImageView<PixelT> destination) const {
     require_same_dimensions(destination.width, destination.height);
-    if (!empty()) {
-      cuda::check(cudaMemcpy(destination.data, data_, size_bytes(),
-                             cudaMemcpyDeviceToHost),
-                  "cudaMemcpy(DeviceImage device to host)");
-    }
+    buffer_.copy_to_host(destination.data, buffer_.size());
   }
 
-  void fill_zero() {
-    if (!empty()) {
-      cuda::check(cudaMemset(data_, 0, size_bytes()),
-                  "cudaMemset(DeviceImage)");
-    }
-  }
+  void fill_zero() { buffer_.fill_zero(); }
 
   void swap(Image& other) noexcept {
     using std::swap;
-    swap(data_, other.data_);
     swap(width_, other.width_);
     swap(height_, other.height_);
+    buffer_.swap(other.buffer_);
   }
 
  private:
-  [[nodiscard]] std::size_t size_bytes() const noexcept {
-    return width_ * height_ * sizeof(PixelT);
+  [[nodiscard]] static std::size_t checked_pixel_count(std::size_t width,
+                                                       std::size_t height) {
+    if (height != 0U &&
+        width > std::numeric_limits<std::size_t>::max() / height) {
+      throw std::overflow_error("Device image dimensions overflow");
+    }
+    return width * height;
   }
 
   void require_same_dimensions(std::size_t width, std::size_t height) const {
@@ -132,19 +96,9 @@ class Image<PixelT, MemorySpace::kDevice> {
     }
   }
 
-  void release() noexcept {
-    if (data_ != nullptr) {
-      // Destructors cannot report CUDA teardown errors safely.
-      static_cast<void>(cudaFree(data_));
-    }
-    data_ = nullptr;
-    width_ = 0U;
-    height_ = 0U;
-  }
-
-  PixelT* data_{};
   std::size_t width_{};
   std::size_t height_{};
+  cuda::DeviceBuffer<PixelT> buffer_;
 };
 
 template <typename PixelT>

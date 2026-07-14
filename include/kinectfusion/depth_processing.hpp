@@ -58,6 +58,7 @@ struct VertexNormalMapsView {
 
 using HostVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kHost>;
 using DeviceVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kDevice>;
+
 using ConstHostVertexNormalMapsView =
     VertexNormalMapsView<MemorySpace::kHost, true>;
 using ConstDeviceVertexNormalMapsView =
@@ -101,6 +102,9 @@ class DepthProcessor;
 
 template <>
 class DepthProcessor<MemorySpace::kHost> {
+  using DepthImg = image_proc::DepthImage;
+  using Vec3fImg = image_proc::Vector3fImage;
+
  public:
   // Throws std::invalid_argument
   explicit DepthProcessor(DepthProcessingOptions options = {});
@@ -108,30 +112,26 @@ class DepthProcessor<MemorySpace::kHost> {
   // Edge-preserving bilateral filter on raw depth. Samples outside the usable
   // depth range (and zeros) are ignored; invalid output pixels stay zero.
   [[nodiscard]] image_proc::DepthImage bilateral_filter(
-      const image_proc::DepthImage& depth_image) const;
+      const DepthImg& depth_image) const;
 
   // Conservative 2x2 reduction: ignore zero depths, reject neighbourhoods
   // with a large depth jump, and average the remaining valid raw depths.
-  [[nodiscard]] image_proc::DepthImage downsample(
-      const image_proc::DepthImage& depth_image) const;
+  [[nodiscard]] DepthImg downsample(const DepthImg& depth_image) const;
 
   // Back-project one depth image into world space (camera_pose = Identity for
   // camera-space maps). Invalid pixels are set to quiet NaN.
   [[nodiscard]] image_proc::Vector3fImage project_to_vertices(
-      const image_proc::DepthImage& depth_image,
-      const CameraIntrinsics& intrinsics,
+      const DepthImg& depth_image, const CameraIntrinsics& intrinsics,
       const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;
 
   // Central-difference surface normals. Border pixels and pixels whose
   // stencil crosses missing vertices or a depth discontinuity stay NaN.
-  [[nodiscard]] image_proc::Vector3fImage compute_normals(
-      const image_proc::Vector3fImage& vertices) const;
+  [[nodiscard]] Vec3fImg compute_normals(const Vec3fImg& vertices) const;
 
   // Bilateral-filtered depth pyramid with image-aligned vertex/normal maps
   // per level for projective ICP.
   [[nodiscard]] SurfacePyramid build_surface_pyramid(
-      const image_proc::DepthImage& depth_image,
-      const CameraIntrinsics& intrinsics,
+      const DepthImg& depth_image, const CameraIntrinsics& intrinsics,
       const Eigen::Matrix4f& camera_pose = Eigen::Matrix4f::Identity()) const;
 
  private:
@@ -142,20 +142,18 @@ class DepthProcessor<MemorySpace::kHost> {
   // the usable raw depths around (col, row), weighted by pixel distance and
   // by metric depth difference to the center sample.
   [[nodiscard]] std::optional<std::uint16_t> bilateral_filtered_pixel(
-      const image_proc::DepthImage& depth_image, int col, int row,
-      float center_meters) const;
+      const DepthImg& depth_image, int col, int row, float center_meters) const;
 
   // Average of the valid raw depths in one kDownsampleFactor^2 input block;
   // nullopt for empty blocks and across depth discontinuities.
   [[nodiscard]] std::optional<std::uint16_t> downsampled_block(
-      const image_proc::DepthImage& depth_image, std::size_t col,
-      std::size_t row) const;
+      const DepthImg& depth_image, std::size_t col, std::size_t row) const;
 
   // Normal from the cross product of central differences over the 4-neighbour
   // stencil; nullopt at unmeasured vertices and depth discontinuities.
-  [[nodiscard]] std::optional<Vec3f> stencil_normal(
-      const image_proc::Vector3fImage& vertices, std::size_t col,
-      std::size_t row) const;
+  [[nodiscard]] std::optional<Vec3f> stencil_normal(const Vec3fImg& vertices,
+                                                    std::size_t col,
+                                                    std::size_t row) const;
 
   DepthProcessingOptions options_;
   // Gaussian exponent scales of the bilateral kernel, precomputed from the

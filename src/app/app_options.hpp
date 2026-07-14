@@ -6,8 +6,14 @@
 #include <filesystem>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/pipeline.hpp>
+#include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
+#include <string>
 
 namespace app {
 
@@ -46,7 +52,10 @@ struct AppOptions {
   bool distance_scaled_truncation{false};
   float truncation_distance_scale{
       kinectfusion::kDefaultTruncationDistanceScale};
-  bool view_angle_weighting{true};
+  std::string tsdf_variant{"angle-weighted"};
+  kinectfusion::MemorySpace space{kinectfusion::MemorySpace::kHost};
+  std::filesystem::path pipelines_config;
+  int compare_every_n_frames{1};
   bool bilateral_filter{true};
   int bilateral_radius{kinectfusion::kDefaultBilateralRadiusPixels};
   float bilateral_spatial_sigma{
@@ -62,7 +71,17 @@ struct AppOptions {
   // requested margin behind the initial camera.
   [[nodiscard]] kinectfusion::Vec3f volume_origin() const;
 
-  [[nodiscard]] kinectfusion::Volume make_volume() const;
+  [[nodiscard]] kinectfusion::VolumeGeometry volume_geometry() const;
+
+  // The TSDF update rule selected by --tsdf-variant.
+  [[nodiscard]] kinectfusion::TsdfRuleVariant tsdf_rule() const;
+
+  // The single pipeline described by the CLI options alone.
+  [[nodiscard]] kinectfusion::PipelineConfig pipeline_config() const;
+
+  // The pipeline set to run: the --pipelines TOML file when given (CLI
+  // options provide the per-pipeline defaults), else the single CLI pipeline.
+  [[nodiscard]] kinectfusion::PipelineSetConfig pipeline_set_config() const;
 
   [[nodiscard]] kinectfusion::RaycastOptions raycast_options() const;
 

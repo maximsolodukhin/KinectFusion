@@ -2,6 +2,8 @@
 
 #include <spdlog/spdlog.h>
 
+// Eigen/Core declares MatrixBase::inverse(); Eigen/LU defines it.
+#include <Eigen/LU>
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
@@ -18,16 +20,17 @@ namespace app {
 
 Reconstruction::Reconstruction(AppOptions options)
     : options_(std::move(options)),
-      volume_(options_.make_volume()),
+      frame_output_(options_),
       tracker_(options_.icp_options()),
       depth_processor_(options_.depth_options()),
-      integrator_(options_.tsdf_options()),
-      raycaster_(options_.raycast_options()) {}
+      pipelines_(
+          kinectfusion::PipelineSet::create(options_.pipeline_set_config())) {}
 
 int Reconstruction::run() {
   if (!initialize()) {
     return EXIT_FAILURE;
   }
+
   while (options_.max_frames < 0 || processed_frames_ < options_.max_frames) {
     log_info("Loading next frame");
     if (!sensor_.process_next_frame()) {
@@ -35,18 +38,22 @@ int Reconstruction::run() {
     }
     process_frame();
   }
+
   log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
-           processed_frames_, volume_.observed_voxel_count());
+           processed_frames_, pipelines_.reference().observed_voxel_count());
+
   return EXIT_SUCCESS;
 }
 
 bool Reconstruction::initialize() {
+  log_pipelines();
   log_info("Opening dataset: {}", options_.dataset_dir.string());
   if (!sensor_.init(options_.dataset_dir)) {
     spdlog::error("Failed to initialize dataset: {}",
                   options_.dataset_dir.string());
     return false;
   }
+
   log_info("Loading initial frame");
   if (!sensor_.process_next_frame()) {
     spdlog::error("Dataset contains no frames");
@@ -70,13 +77,11 @@ bool Reconstruction::initialize() {
 
   log_info("Frame {}: raycasting initialized model",
            sensor_.current_frame_index());
-  model_maps_ = raycast_model(camera_to_world_, 0);
-  log_info("Frame {}: writing outputs to {}", sensor_.current_frame_index(),
-           options_.output_dir.string());
-  write_outputs(options_, model_maps_, 0);
+  render_model_outputs();
 
   log_info("Initialized reconstruction from frame 0: observed voxels={}",
-           volume_.observed_voxel_count());
+           pipelines_.reference().observed_voxel_count());
+
   return true;
 }
 
@@ -103,22 +108,26 @@ void Reconstruction::process_frame() {
 }
 
 kinectfusion::IcpOutcome Reconstruction::track_pose(
-    const SurfacePyramid& live_pyramid) const {
+    const SurfacePyramid& live_pyramid) {
   kinectfusion::IcpOutcome tracking;
   tracking.pose = camera_to_world_;
   auto tracked_pose = camera_to_world_;
 
   log_info("Frame {}: tracking pose with projective ICP",
            sensor_.current_frame_index());
+
   for (std::size_t level_index = live_pyramid.size(); level_index-- > 0;) {
     const auto level = static_cast<unsigned int>(level_index);
     log_info("Frame {} level {}: raycasting model prediction",
              sensor_.current_frame_index(), level);
+
     const auto level_model_maps = raycast_model(tracked_pose, level);
     const auto level_intrinsics = sensor_.depth_intrinsics().scaled(level);
     const unsigned int iterations = options_.icp_iterations_for_level(level);
+
     log_info("Frame {} level {}: running ICP (iterations={})",
              sensor_.current_frame_index(), level, iterations);
+
     tracking = tracker_.estimate_pose(
         {.live = view(live_pyramid.at(level_index).maps),
          .model = {.vertices = level_model_maps.points.view(),
@@ -127,9 +136,11 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
          .model_camera_to_world = tracked_pose,
          .initial_camera_to_world = tracked_pose,
          .iterations = iterations});
+
     log_info("Frame {} level {}: ICP result={} {}",
              sensor_.current_frame_index(), level,
              tracking.result ? "accepted" : "rejected", tracking.diagnostics);
+
     tracked_pose = tracking.pose;
     if (!tracking.result) {
       break;
@@ -156,24 +167,20 @@ void Reconstruction::integrate_tracked_frame(
   integrate_frame(&live_pyramid.front().maps.normals);
 
   log_info("Frame {}: raycasting updated model", sensor_.current_frame_index());
-  model_maps_ = raycast_model(camera_to_world_, 0);
-  log_info("Frame {}: writing outputs to {}", sensor_.current_frame_index(),
-           options_.output_dir.string());
-  write_outputs(options_, model_maps_, sensor_.current_frame_index());
+  render_model_outputs();
 
   log_info("Frame {} integrated: {} observed_voxels={}",
            sensor_.current_frame_index(), tracking.diagnostics,
-           volume_.observed_voxel_count());
+           pipelines_.reference().observed_voxel_count());
 }
 
 void Reconstruction::integrate_frame(
     const kinectfusion::image_proc::Vector3fImage* normals) {
-  integrator_.integrate(volume_,
-                        {.depth = &sensor_.depth_image(),
-                         .color = &sensor_.color_image(),
-                         .normals = normals,
-                         .intrinsics = sensor_.depth_intrinsics(),
-                         .world_to_camera = camera_to_world_.inverse()});
+  pipelines_.integrate({.depth = &sensor_.depth_image(),
+                        .color = &sensor_.color_image(),
+                        .normals = normals,
+                        .intrinsics = sensor_.depth_intrinsics(),
+                        .world_to_camera = camera_to_world_.inverse()});
 }
 
 void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
@@ -202,9 +209,51 @@ Reconstruction::SurfacePyramid Reconstruction::build_pyramid() const {
 }
 
 kinectfusion::SurfaceMaps Reconstruction::raycast_model(
-    const Eigen::Matrix4f& camera_to_world, unsigned int level) const {
-  return raycaster_.raycast(
-      volume_, AppOptions::raycast_camera(sensor_, camera_to_world, level));
+    const Eigen::Matrix4f& camera_to_world, unsigned int level) {
+  return pipelines_.raycast_reference(
+      AppOptions::raycast_camera(sensor_, camera_to_world, level));
+}
+
+void Reconstruction::render_model_outputs() {
+  const int frame_index = sensor_.current_frame_index();
+  const auto camera = AppOptions::raycast_camera(sensor_, camera_to_world_, 0);
+
+  log_info("Frame {}: writing outputs to {}", frame_index,
+           options_.output_dir.string());
+  if (!pipelines_.should_compare(frame_index)) {
+    model_maps_ = pipelines_.raycast_reference(camera);
+    frame_output_.write_frame(model_maps_, frame_index);
+    return;
+  }
+
+  auto outputs = pipelines_.raycast_all(camera);
+  const auto comparisons = pipelines_.compare(outputs);
+  for (const auto& comparison : comparisons) {
+    log_info("Frame {} {}", frame_index, comparison);
+  }
+  frame_output_.append_ablation_stats(frame_index, comparisons);
+
+  const std::string reference_name = pipelines_.reference().name();
+  for (auto& output : outputs) {
+    frame_output_.write_frame(output.maps, frame_index, output.name);
+    if (output.name == reference_name) {
+      model_maps_ = std::move(output.maps);
+    }
+  }
+}
+
+void Reconstruction::log_pipelines() const {
+  const kinectfusion::Pipeline& reference = pipelines_.reference();
+  for (const auto& member : pipelines_.members()) {
+    const bool is_reference =
+        pipelines_.size() > 1 && member.pipeline.get() == &reference;
+    log_info("Pipeline '{}' ready{}", member.pipeline->name(),
+             is_reference ? " (reference)" : "");
+    if (!member.fallback_reason.empty()) {
+      log_warn("Pipeline '{}': {}", member.pipeline->name(),
+               member.fallback_reason);
+    }
+  }
 }
 
 void Reconstruction::log_frame_loaded() const {

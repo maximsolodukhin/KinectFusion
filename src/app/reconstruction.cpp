@@ -11,6 +11,7 @@
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/volume.hpp>
 #include <utility>
+#include <variant>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
@@ -121,21 +122,21 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
     log_info("Frame {} level {}: raycasting model prediction",
              sensor_.current_frame_index(), level);
 
-    const auto level_model_maps = raycast_model(tracked_pose, level);
+    const auto camera =
+        AppOptions::raycast_camera(sensor_, tracked_pose, level);
     const auto level_intrinsics = sensor_.depth_intrinsics().scaled(level);
     const unsigned int iterations = options_.icp_iterations_for_level(level);
 
     log_info("Frame {} level {}: running ICP (iterations={})",
              sensor_.current_frame_index(), level, iterations);
 
-    tracking = tracker_.estimate_pose(
-        {.live = view(live_pyramid.at(level_index).maps),
-         .model = {.vertices = level_model_maps.points.view(),
-                   .normals = level_model_maps.normals.view()},
-         .model_intrinsics = level_intrinsics,
-         .model_camera_to_world = tracked_pose,
-         .initial_camera_to_world = tracked_pose,
-         .iterations = iterations});
+    const auto live_views = view(live_pyramid.at(level_index).maps);
+    tracking = std::visit(
+        [&](const auto& surfaces) {
+          return tracker_.estimate_pose(surfaces, level_intrinsics,
+                                        tracked_pose, iterations);
+        },
+        pipelines_.tracking_surfaces(camera, live_views));
 
     log_info("Frame {} level {}: ICP result={} {}",
              sensor_.current_frame_index(), level,
@@ -190,9 +191,6 @@ void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
   }
   relocalizing_ = true;
   ++relocalization_frames_;
-  log_info("Frame {}: raycasting last accepted pose for relocalization",
-           sensor_.current_frame_index());
-  model_maps_ = raycast_model(camera_to_world_, 0);
   log_warn("Frame {} tracking rejected: status={} {}",
            sensor_.current_frame_index(), tracking.result.error(),
            tracking.diagnostics);
@@ -208,12 +206,6 @@ Reconstruction::SurfacePyramid Reconstruction::build_pyramid() const {
                                                 sensor_.depth_intrinsics());
 }
 
-kinectfusion::SurfaceMaps Reconstruction::raycast_model(
-    const Eigen::Matrix4f& camera_to_world, unsigned int level) {
-  return pipelines_.raycast_reference(
-      AppOptions::raycast_camera(sensor_, camera_to_world, level));
-}
-
 void Reconstruction::render_model_outputs() {
   const int frame_index = sensor_.current_frame_index();
   const auto camera = AppOptions::raycast_camera(sensor_, camera_to_world_, 0);
@@ -221,8 +213,8 @@ void Reconstruction::render_model_outputs() {
   log_info("Frame {}: writing outputs to {}", frame_index,
            options_.output_dir.string());
   if (!pipelines_.should_compare(frame_index)) {
-    model_maps_ = pipelines_.raycast_reference(camera);
-    frame_output_.write_frame(model_maps_, frame_index);
+    frame_output_.write_frame(pipelines_.raycast_reference(camera),
+                              frame_index);
     return;
   }
 
@@ -234,11 +226,10 @@ void Reconstruction::render_model_outputs() {
   frame_output_.append_ablation_stats(frame_index, comparisons);
 
   const std::string reference_name = pipelines_.reference().name();
-  for (auto& output : outputs) {
-    frame_output_.write_frame(output.maps, frame_index, output.name);
-    if (output.name == reference_name) {
-      model_maps_ = std::move(output.maps);
-    }
+  for (const auto& output : outputs) {
+    const bool is_reference = output.name == reference_name;
+    frame_output_.write_frame(output.maps, frame_index,
+                              is_reference ? std::string{} : output.name);
   }
 }
 

@@ -41,6 +41,7 @@ struct VertexNormalMapsFor {
 };
 
 using VertexNormalMaps = VertexNormalMapsFor<MemorySpace::kHost>;
+using DeviceVertexNormalMaps = VertexNormalMapsFor<MemorySpace::kDevice>;
 
 // IsConst toggles the pointee types, so the mutable and read-only views share
 // one definition. Views have pointer semantics: constness is shallow, like
@@ -54,7 +55,19 @@ struct VertexNormalMapsView {
   image_proc::ImageView<Pointee<Vec3f>, Space> normals;
 
   static constexpr MemorySpace kMemorySpace = Space;
+
+  // Mutable views convert to read-only views implicitly, like std::span.
+  template <bool TargetConst = true>
+    requires(TargetConst && !IsConst)
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+  // NOLINTNEXTLINE(hicpp-explicit-conversions)
+  operator VertexNormalMapsView<Space, TargetConst>() const {
+    return {.vertices = vertices, .normals = normals};
+  }
 };
+
+template <MemorySpace Space>
+using ConstVertexNormalMapsView = VertexNormalMapsView<Space, true>;
 
 using HostVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kHost>;
 using DeviceVertexNormalMapsView = VertexNormalMapsView<MemorySpace::kDevice>;
@@ -64,15 +77,16 @@ using ConstHostVertexNormalMapsView =
 using ConstDeviceVertexNormalMapsView =
     VertexNormalMapsView<MemorySpace::kDevice, true>;
 
-[[nodiscard]] inline HostVertexNormalMapsView view(VertexNormalMaps& maps) {
-  return HostVertexNormalMapsView{.vertices = maps.vertices.view(),
-                                  .normals = maps.normals.view()};
+template <MemorySpace Space>
+[[nodiscard]] VertexNormalMapsView<Space> view(
+    VertexNormalMapsFor<Space>& maps) {
+  return {.vertices = maps.vertices.view(), .normals = maps.normals.view()};
 }
 
-[[nodiscard]] inline ConstHostVertexNormalMapsView view(
-    const VertexNormalMaps& maps) {
-  return ConstHostVertexNormalMapsView{.vertices = maps.vertices.view(),
-                                       .normals = maps.normals.view()};
+template <MemorySpace Space>
+[[nodiscard]] ConstVertexNormalMapsView<Space> view(
+    const VertexNormalMapsFor<Space>& maps) {
+  return {.vertices = maps.vertices.view(), .normals = maps.normals.view()};
 }
 
 template <MemorySpace Space = MemorySpace::kHost>

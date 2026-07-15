@@ -3,14 +3,31 @@
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <kinectfusion/cuda/check.cuh>
+#include <kinectfusion/cuda/launch.cuh>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 
 namespace kinectfusion::cuda {
+
+namespace detail {
+
+// std::fill_n
+template <typename T>
+__global__ void fill_kernel(T* data, std::size_t count, T value) {
+  const std::size_t stride = static_cast<std::size_t>(blockDim.x) * gridDim.x;
+  const std::size_t first =
+      (static_cast<std::size_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  for (std::size_t index = first; index < count; index += stride) {
+    data[index] = value;
+  }
+}
+
+}  // namespace detail
 
 // Move-only RAII ownership of one device allocation — the single place that
 // calls cudaMalloc/cudaFree. Owners with richer semantics (device images,
@@ -28,20 +45,23 @@ class DeviceBuffer {
   DeviceBuffer() = default;
 
   explicit DeviceBuffer(std::size_t count) : count_(count) {
-    if (count_ > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
-      throw std::overflow_error("Device buffer allocation size overflows");
+    allocate();
+    try {
+      fill_zero();
+    } catch (...) {
+      // The destructor does not run when a constructor throws.
+      release();
+      throw;
     }
-    if (count_ != 0U) {
-      check(cudaMalloc(reinterpret_cast<void**>(&data_), size_bytes()),
-            "cudaMalloc(DeviceBuffer)");
-      try {
-        fill_zero();
-      } catch (...) {
-        // The destructor does not run when a constructor throws.
-        release();
-        throw;
-      }
-    }
+  }
+
+  // Skips the zero initialization for buffers that are immediately
+  // overwritten
+  [[nodiscard]] static DeviceBuffer uninitialized(std::size_t count) {
+    DeviceBuffer buffer;
+    buffer.count_ = count;
+    buffer.allocate();
+    return buffer;
   }
 
   ~DeviceBuffer() { release(); }
@@ -96,6 +116,19 @@ class DeviceBuffer {
     }
   }
 
+  // Synchronous element-wise fill.
+  void fill(const T& value) {
+    if (empty()) {
+      return;
+    }
+    constexpr unsigned int kBlock = 256;
+    constexpr unsigned int kMaxGrid = 256;
+    const unsigned int grid = std::min(ceil_div(count_, kBlock), kMaxGrid);
+    detail::fill_kernel<<<grid, kBlock>>>(data_, count_, value);
+    check(cudaGetLastError(), "fill_kernel launch");
+    check(cudaDeviceSynchronize(), "fill_kernel");
+  }
+
   void swap(DeviceBuffer& other) noexcept {
     using std::swap;
     swap(data_, other.data_);
@@ -103,6 +136,16 @@ class DeviceBuffer {
   }
 
  private:
+  void allocate() {
+    if (count_ > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
+      throw std::overflow_error("Device buffer allocation size overflows");
+    }
+    if (count_ != 0U) {
+      check(cudaMalloc(reinterpret_cast<void**>(&data_), size_bytes()),
+            "cudaMalloc(DeviceBuffer)");
+    }
+  }
+
   [[nodiscard]] std::size_t size_bytes() const noexcept {
     return count_ * sizeof(T);
   }

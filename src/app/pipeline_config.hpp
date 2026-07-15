@@ -6,9 +6,17 @@
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
+#include <map>
+#include <string>
 #include <string_view>
 
 namespace app {
+
+// The single name registry for memory spaces, shared by the TOML parser and
+// the CLI transformer.
+[[nodiscard]] const std::map<std::string, kinectfusion::MemorySpace,
+                             std::less<>>&
+memory_space_names();
 
 // Name <-> value mappings shared by the CLI and the TOML pipeline config.
 // Throws std::invalid_argument on unknown names.

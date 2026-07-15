@@ -104,19 +104,20 @@ void FrameOutput::write_frame(const kinectfusion::SurfaceMaps& maps,
 
 void FrameOutput::append_ablation_stats(
     int frame_index,
-    const std::vector<kinectfusion::PipelineComparison>& comparisons) const {
+    const std::vector<kinectfusion::PipelineComparison>& comparisons) {
   if (comparisons.empty()) {
     return;
   }
 
   std::filesystem::create_directories(output_dir_);
   const auto path = output_dir_ / "ablation_stats.csv";
-  const bool write_header = !std::filesystem::exists(path);
-  std::ofstream output{path, std::ios::app};
+  const bool write_header = !ablation_stats_started_;
+  std::ofstream output{path, write_header ? std::ios::trunc : std::ios::app};
   if (!output) {
     throw std::runtime_error{"Failed to open ablation stats output: " +
                              path.string()};
   }
+  ablation_stats_started_ = true;
 
   if (write_header) {
     output << "frame,pipeline,compared_voxels,volume_only_pipeline,"

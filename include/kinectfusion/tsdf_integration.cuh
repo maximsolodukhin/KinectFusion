@@ -21,8 +21,7 @@ class DeviceDepthFrame {
   image_proc::DeviceColorImage color_;
   image_proc::DeviceVector3fImage normals_;
   CameraIntrinsics intrinsics_{};
-  Mat3f rotation_{};
-  Vec3f translation_{};
+  RigidTransform world_to_camera_{};
 };
 
 // Device driver of the per-element TSDF layer, the mirror image of the
@@ -31,8 +30,8 @@ class DeviceDepthFrame {
 // Synchronous. throws std::runtime_error on CUDA failures
 class DeviceIntegrationSweep {
  public:
-  static void run(const VolumeView<MemorySpace::kDevice>& volume,
-                  const IntegrationContext<MemorySpace::kDevice>& context,
+  static void run(const DeviceVolumeView& volume,
+                  const DeviceIntegrationContext& context,
                   const TsdfRuleVariant& rule);
 };
 

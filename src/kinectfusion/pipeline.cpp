@@ -21,6 +21,8 @@ class HostPipeline final : public Pipeline {
         integrator_(config.tsdf_rule, config.integration),
         raycaster_(config.raycast) {}
 
+  using Pipeline::integrate;
+
   void integrate(const DepthFrame& frame) override {
     integrator_.integrate(volume_.view(), frame);
   }
@@ -29,8 +31,15 @@ class HostPipeline final : public Pipeline {
     return raycaster_.raycast(volume_.view(), camera);
   }
 
+  [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
+      const RaycastCamera& camera,
+      const ConstHostVertexNormalMapsView& live) override {
+    tracking_model_ = raycaster_.raycast(volume_.view(), camera);
+    return HostTrackingSurfaces::from_render(live, view(tracking_model_));
+  }
+
   [[nodiscard]] std::size_t observed_voxel_count() const override {
-    return volume_.observed_voxel_count();
+    return HostVolumeReduction::observed_voxel_count(volume_.view());
   }
 
   [[nodiscard]] ConstHostVolumeView host_view(
@@ -42,6 +51,7 @@ class HostPipeline final : public Pipeline {
   HostVolume volume_;
   TsdfIntegrator integrator_;
   Raycaster raycaster_;
+  SurfaceMaps tracking_model_;
 };
 
 }  // namespace

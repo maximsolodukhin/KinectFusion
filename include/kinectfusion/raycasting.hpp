@@ -25,11 +25,8 @@ struct RaycastCamera {
   std::size_t height{};
   Eigen::Matrix4f camera_to_world{Eigen::Matrix4f::Identity()};
 
-  [[nodiscard]] Mat3f rotation() const {
-    return from_eigen(Eigen::Matrix3f{camera_to_world.block<3, 3>(0, 0)});
-  }
-  [[nodiscard]] Vec3f origin() const {
-    return from_eigen(Eigen::Vector3f{camera_to_world.block<3, 1>(0, 3)});
+  [[nodiscard]] RigidTransform pose() const {
+    return from_eigen(camera_to_world);
   }
 };
 
@@ -38,13 +35,20 @@ template <MemorySpace Space = MemorySpace::kHost>
 class SurfaceRaycast {
  public:
   SurfaceRaycast(const VolumeSampler<Space>& sampler,
-                 const RaycastOptions& options, const Mat3f& rotation,
-                 const Vec3f& origin, const CameraIntrinsics& intrinsics)
+                 const RaycastOptions& options, const RigidTransform& pose,
+                 const CameraIntrinsics& intrinsics)
       : sampler_(sampler),
         options_(options),
-        rotation_(rotation),
-        origin_(origin),
+        pose_(pose),
         intrinsics_(intrinsics) {}
+
+  // Builds a raycast of `volume` as seen from `camera`.
+  [[nodiscard]] static SurfaceRaycast from_camera(
+      const ConstVolumeView<Space>& volume, const RaycastOptions& options,
+      const RaycastCamera& camera) {
+    return {VolumeSampler<Space>{volume}, options, camera.pose(),
+            camera.intrinsics};
+  }
 
   KINECTFUSION_HOST_DEVICE void render_pixel(SurfaceMapsView<Space> maps,
                                              std::size_t col,
@@ -52,7 +56,7 @@ class SurfaceRaycast {
     auto pixel = Pixel{.x = col, .y = row}.as_vector();
     auto translated = intrinsics_.back_project(pixel, 1.0F);
 
-    const Vec3f direction = rotation_ * translated;
+    const Vec3f direction = pose_.rotation * translated;
     const float direction_norm = norm(direction);
 
     if (direction_norm <= 0.0F) {
@@ -80,7 +84,7 @@ class SurfaceRaycast {
     compat::optional<Sample> previous;
     float ray_length = options_.min_depth;
     while (ray_length <= options_.max_depth) {
-      const Vec3f point = origin_ + (ray_length * direction);
+      const Vec3f point = pose_.translation + (ray_length * direction);
       const auto tsdf = sampler_.tsdf(point, options_.tsdf_corner_policy);
       if (!tsdf) {
         previous.reset();
@@ -122,10 +126,12 @@ class SurfaceRaycast {
 
   VolumeSampler<Space> sampler_;
   RaycastOptions options_;
-  Mat3f rotation_;
-  Vec3f origin_;
+  RigidTransform pose_;
   CameraIntrinsics intrinsics_;
 };
+
+using HostSurfaceRaycast = SurfaceRaycast<MemorySpace::kHost>;
+using DeviceSurfaceRaycast = SurfaceRaycast<MemorySpace::kDevice>;
 
 // Host driver, renders the zero-crossing surface of a volume from a camera.
 class Raycaster {
@@ -137,9 +143,14 @@ class Raycaster {
   [[nodiscard]] SurfaceMaps raycast(ConstHostVolumeView volume,
                                     const RaycastCamera& camera) const;
 
+  // The validated configuration; space-specific drivers launch from these.
+  [[nodiscard]] const RaycastOptions& options() const { return options_; }
+
+  // Throws std::invalid_argument
+  static void validate_camera(const RaycastCamera& camera);
+
  private:
   [[nodiscard]] static RaycastOptions validated(RaycastOptions options);
-  static void validate_camera(const RaycastCamera& camera);
 
   RaycastOptions options_;
 };

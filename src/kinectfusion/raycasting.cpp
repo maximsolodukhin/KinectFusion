@@ -20,9 +20,8 @@ SurfaceMaps Raycaster::raycast(ConstHostVolumeView volume,
       .normals = Vec3fImg{camera.width, camera.height, invalid_vec3f()},
       .colors = ColorImg{camera.width, camera.height}};
 
-  const SurfaceRaycast<MemorySpace::kHost> raycast{
-      HostVolumeSampler{volume}, options_, camera.rotation(), camera.origin(),
-      camera.intrinsics};
+  const auto raycast =
+      HostSurfaceRaycast::from_camera(volume, options_, camera);
   const HostSurfaceMapsView maps_view = view(maps);
   for (const auto [col, row] : PixelIndices{camera.width, camera.height}) {
     raycast.render_pixel(maps_view, col, row);

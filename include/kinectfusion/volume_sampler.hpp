@@ -22,7 +22,7 @@ enum class CornerPolicy : std::uint8_t {
 template <MemorySpace Space = MemorySpace::kHost>
 class VolumeSampler {
  public:
-  explicit VolumeSampler(VolumeView<Space, true> volume) : volume_(volume) {}
+  explicit VolumeSampler(ConstVolumeView<Space> volume) : volume_(volume) {}
 
   [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float voxel_size() const {
     return volume_.voxel_size();
@@ -230,7 +230,7 @@ class VolumeSampler {
                              static_cast<std::size_t>(corner.z));
   }
 
-  VolumeView<Space, true> volume_;
+  ConstVolumeView<Space> volume_;
 };
 
 using HostVolumeSampler = VolumeSampler<MemorySpace::kHost>;

@@ -12,7 +12,7 @@ namespace {
 class IntegrationSweep {
  public:
   IntegrationSweep(const HostVolumeView& volume,
-                   const IntegrationContext<MemorySpace::kHost>& context)
+                   const HostIntegrationContext& context)
       : volume_(volume), context_(&context) {}
 
   template <TsdfUpdateRule<MemorySpace::kHost> Rule>
@@ -24,7 +24,7 @@ class IntegrationSweep {
 
  private:
   HostVolumeView volume_;
-  const IntegrationContext<MemorySpace::kHost>* context_;
+  const HostIntegrationContext* context_;
 };
 
 }  // namespace
@@ -36,7 +36,7 @@ TsdfIntegrator::TsdfIntegrator(TsdfRuleVariant rule,
 void TsdfIntegrator::integrate(const HostVolumeView& volume,
                                const DepthFrame& frame) const {
   validate_frame(frame);
-  const IntegrationContext<MemorySpace::kHost> context{frame.view(), options_};
+  const HostIntegrationContext context{frame.view(), options_};
   const IntegrationSweep sweep{volume, context};
   std::visit([&](const auto& rule) { sweep.run(rule); }, rule_);
 }

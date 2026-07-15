@@ -2,14 +2,13 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_RAYCASTING_HPP
 
 #include <Eigen/Core>
-#include <algorithm>
 #include <cstddef>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/grid.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <kinectfusion/volume_sampler.hpp>
-#include <optional>
 
 namespace kinectfusion {
 
@@ -47,8 +46,9 @@ class SurfaceRaycast {
         origin_(origin),
         intrinsics_(intrinsics) {}
 
-  void render_pixel(SurfaceMapsView<Space> maps, std::size_t col,
-                    std::size_t row) const {
+  KINECTFUSION_HOST_DEVICE void render_pixel(SurfaceMapsView<Space> maps,
+                                             std::size_t col,
+                                             std::size_t row) const {
     auto pixel = Pixel{.x = col, .y = row}.as_vector();
     auto translated = intrinsics_.back_project(pixel, 1.0F);
 
@@ -69,15 +69,15 @@ class SurfaceRaycast {
   // Returns the interpolated zero crossing where the ray first passes from
   // front to back; gives up at max_depth or when leaving a surface from
   // behind.
-  [[nodiscard]] std::optional<Vec3f> find_zero_crossing(
-      const Vec3f& direction) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f>
+  find_zero_crossing(const Vec3f& direction) const {
     struct Sample {
       float tsdf{};
       Vec3f point{};
     };
 
     const float base_step = sampler_.voxel_size() * options_.step_scale;
-    std::optional<Sample> previous;
+    compat::optional<Sample> previous;
     float ray_length = options_.min_depth;
     while (ray_length <= options_.max_depth) {
       const Vec3f point = origin_ + (ray_length * direction);
@@ -93,18 +93,22 @@ class SurfaceRaycast {
         return previous->point + (alpha * (point - previous->point));
       }
       if (previous && previous->tsdf < 0.0F && *tsdf > 0.0F) {
-        return std::nullopt;
+        return compat::nullopt;
       }
       previous = Sample{.tsdf = *tsdf, .point = point};
-      auto step = std::max(base_step, *tsdf * sampler_.truncation_distance() *
-                                          options_.step_scale);
+      auto step =
+          compat::max(base_step, *tsdf * sampler_.truncation_distance() *
+                                     options_.step_scale);
       ray_length += *tsdf > 0.0F ? step : base_step;
     }
-    return std::nullopt;
+    return compat::nullopt;
   }
 
-  void write_surface_sample(SurfaceMapsView<Space> maps, std::size_t col,
-                            std::size_t row, const Vec3f& surface) const {
+  // Modifies in-place, can't be changed as a return value because the maps are
+  // a view into a preallocated buffer.
+  KINECTFUSION_HOST_DEVICE void write_surface_sample(
+      SurfaceMapsView<Space> maps, std::size_t col, std::size_t row,
+      const Vec3f& surface) const {
     const auto normal = sampler_.normal(surface, options_.tsdf_corner_policy);
     if (!normal) {
       return;

@@ -45,4 +45,13 @@ target_sources(
           virtual_sensor.cpp
           volume.cpp)
 
+if(KINECTFUSION_HAS_CUDA)
+  target_sources(kinectfusion PRIVATE cuda/device_pipeline.cu cuda/tsdf_integration.cu)
+  target_compile_definitions(kinectfusion PRIVATE KINECTFUSION_HAS_CUDA)
+  set_target_properties(kinectfusion PROPERTIES CUDA_STANDARD 20)
+  target_compile_options(kinectfusion
+                         PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+  target_link_libraries(kinectfusion PUBLIC CUDA::cudart_static)
+endif()
+
 add_subdirectory(image_proc)

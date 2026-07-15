@@ -6,6 +6,7 @@
 #include <kinectfusion/volume.hpp>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -47,20 +48,28 @@ class HostPipeline final : public Pipeline {
 
 Pipeline::Pipeline(std::string name) : name_(std::move(name)) {}
 
-bool Pipeline::device_available() {
-  // Placeholder for CUDA pr.
-  return false;
+#ifndef KINECTFUSION_HAS_CUDA
+bool Pipeline::device_available() { return false; }
+
+std::unique_ptr<Pipeline> Pipeline::create_device(
+    const PipelineConfig& /*config*/) {
+  throw std::logic_error("KinectFusion was built without CUDA support");
 }
+#endif
 
 Pipeline::Creation Pipeline::create(const PipelineConfig& config) {
   require(!config.name.empty(), "Pipeline requires a non-empty name");
 
-  std::string fallback_reason;
-  if (config.space == MemorySpace::kDevice && !device_available()) {
-    fallback_reason = "device memory space unavailable; running on host";
+  if (config.space == MemorySpace::kDevice) {
+    if (device_available()) {
+      return Creation{.pipeline = create_device(config), .fallback_reason = {}};
+    }
+    return Creation{
+        .pipeline = std::make_unique<HostPipeline>(config),
+        .fallback_reason = "device memory space unavailable; running on host"};
   }
   return Creation{.pipeline = std::make_unique<HostPipeline>(config),
-                  .fallback_reason = std::move(fallback_reason)};
+                  .fallback_reason = {}};
 }
 
 }  // namespace kinectfusion

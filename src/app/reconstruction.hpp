@@ -36,8 +36,6 @@ class Reconstruction {
   void integrate_frame(const kinectfusion::image_proc::Vector3fImage* normals);
   void relocalize(const kinectfusion::IcpOutcome& tracking);
   [[nodiscard]] SurfacePyramid build_pyramid() const;
-  [[nodiscard]] kinectfusion::SurfaceMaps raycast_model(
-      const Eigen::Matrix4f& camera_to_world, unsigned int level);
   void render_model_outputs();
   void log_pipelines() const;
   void log_frame_loaded() const;
@@ -50,7 +48,6 @@ class Reconstruction {
       depth_processor_;
   kinectfusion::PipelineSet pipelines_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
-  kinectfusion::SurfaceMaps model_maps_;
   int processed_frames_{1};
   bool relocalizing_{false};
   int relocalization_frames_{0};

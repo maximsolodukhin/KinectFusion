@@ -20,10 +20,11 @@ class FrameOutput {
   void write_frame(const kinectfusion::SurfaceMaps& maps, int frame_index,
                    const std::string& subdirectory = {}) const;
 
-  // Appends one row per comparison to output_dir/ablation_stats.csv.
+  // Appends one row per comparison to output_dir/ablation_stats.csv; the
+  // first write of a run truncates whatever a previous run left there.
   void append_ablation_stats(
       int frame_index,
-      const std::vector<kinectfusion::PipelineComparison>& comparisons) const;
+      const std::vector<kinectfusion::PipelineComparison>& comparisons);
 
  private:
   [[nodiscard]] static std::string frame_prefix(int frame_index);
@@ -37,6 +38,7 @@ class FrameOutput {
   std::filesystem::path output_dir_;
   bool write_raycast_images_;
   bool write_point_clouds_;
+  bool ablation_stats_started_{false};
 };
 
 }  // namespace app

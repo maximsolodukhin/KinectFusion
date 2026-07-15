@@ -88,7 +88,7 @@ class GridIndices {
 };
 
 // The 2D index space of an image in storage order, x fastest
-// looks like stupid copypaste but dunno how to collapse
+// GridIndices but z=1
 class PixelIndices {
  public:
   class Iterator {
@@ -97,17 +97,15 @@ class PixelIndices {
     using difference_type = std::ptrdiff_t;
 
     Iterator() = default;
-    Iterator(Pixel current, Pixel extent)
-        : current_(current), extent_(extent) {}
+    explicit Iterator(GridIndices::Iterator inner) : inner_(inner) {}
 
-    [[nodiscard]] Pixel operator*() const { return current_; }
+    [[nodiscard]] Pixel operator*() const {
+      const GridIndex index = *inner_;
+      return Pixel{.x = index.x, .y = index.y};
+    }
 
     Iterator& operator++() {
-      if (++current_.x < extent_.x) {
-        return *this;
-      }
-      current_.x = 0;
-      ++current_.y;
+      ++inner_;
       return *this;
     }
 
@@ -117,27 +115,21 @@ class PixelIndices {
       return copy;
     }
 
-    [[nodiscard]] friend bool operator==(const Iterator& lhs,
-                                         const Iterator& rhs) {
-      return lhs.current_ == rhs.current_;
-    }
+    [[nodiscard]] friend bool operator==(const Iterator&,
+                                         const Iterator&) = default;
 
    private:
-    Pixel current_{};
-    Pixel extent_{};
+    GridIndices::Iterator inner_;
   };
 
   PixelIndices(std::size_t width, std::size_t height)
-      : extent_(width > 0 && height > 0 ? Pixel{.x = width, .y = height}
-                                        : Pixel{}) {}
+      : grid_({.x = width, .y = height, .z = 1}) {}
 
-  [[nodiscard]] Iterator begin() const { return Iterator{Pixel{}, extent_}; }
-  [[nodiscard]] Iterator end() const {
-    return Iterator{Pixel{.y = extent_.y}, extent_};
-  }
+  [[nodiscard]] Iterator begin() const { return Iterator{grid_.begin()}; }
+  [[nodiscard]] Iterator end() const { return Iterator{grid_.end()}; }
 
  private:
-  Pixel extent_;
+  GridIndices grid_;
 };
 
 static_assert(std::forward_iterator<GridIndices::Iterator>);

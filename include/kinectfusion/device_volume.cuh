@@ -10,16 +10,18 @@ namespace kinectfusion {
 // Device specialization of the volume storage mechanics: BasicVolume<kDevice>
 // owns its voxel and colour data through cuda::DeviceBuffer, the same owner
 // the device image sits on. volume.hpp declares the primary template.
-//
-// todo(someone): observed_voxel_count reduction in the raycast CUDA PR
 template <>
 struct SpaceTraits<MemorySpace::kDevice> {
   template <typename T>
   using Buffer = cuda::DeviceBuffer<T>;
 
+  // Matches host uninitialized voxel behavior
+  // (1.0F for tsdf, 0 for color & weight)
   template <typename T>
   [[nodiscard]] static Buffer<T> allocate(std::size_t count) {
-    return Buffer<T>{count};
+    auto buffer = Buffer<T>::uninitialized(count);
+    buffer.fill(T{});
+    return buffer;
   }
 };
 
@@ -39,6 +41,15 @@ struct Transfer<MemorySpace::kHost, MemorySpace::kDevice> {
                 "cudaMemcpy(volume colors device to host)");
   }
 };
+
+template <>
+class VolumeReduction<MemorySpace::kDevice> {
+ public:
+  [[nodiscard]] static std::size_t observed_voxel_count(
+      const ConstDeviceVolumeView& volume);
+};
+
+using DeviceVolumeReduction = VolumeReduction<MemorySpace::kDevice>;
 
 template <>
 struct Transfer<MemorySpace::kDevice, MemorySpace::kHost> {

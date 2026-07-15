@@ -159,6 +159,17 @@ struct Mat3f {
                     dot(matrix.row_z, vector));
 }
 
+// Rigid body transform
+struct RigidTransform {
+  Mat3f rotation{};
+  Vec3f translation{};
+};
+
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr Vec3f operator*(
+    const RigidTransform& transform, const Vec3f& point) {
+  return (transform.rotation * point) + transform.translation;
+}
+
 // Weighted average of two samples; the caller guarantees a positive total
 // weight.
 template <typename ValueT>
@@ -185,6 +196,13 @@ from_eigen(const Eigen::Matrix3f& value) {
   return Mat3f{.row_x = make_vec3f(value(0, 0), value(0, 1), value(0, 2)),
                .row_y = make_vec3f(value(1, 0), value(1, 1), value(1, 2)),
                .row_z = make_vec3f(value(2, 0), value(2, 1), value(2, 2))};
+}
+
+[[nodiscard]] KINECTFUSION_FORCEINLINE RigidTransform
+from_eigen(const Eigen::Matrix4f& transform) {
+  return {
+      .rotation = from_eigen(Eigen::Matrix3f{transform.block<3, 3>(0, 0)}),
+      .translation = from_eigen(Eigen::Vector3f{transform.block<3, 1>(0, 3)})};
 }
 
 [[nodiscard]] KINECTFUSION_FORCEINLINE Eigen::Vector3f to_eigen(

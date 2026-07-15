@@ -46,6 +46,10 @@ class PipelineSet {
 
   [[nodiscard]] SurfaceMaps raycast_reference(const RaycastCamera& camera);
 
+  // Tracking views from the reference pipeline, in its own memory space.
+  [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
+      const RaycastCamera& camera, const ConstHostVertexNormalMapsView& live);
+
   // Ordered like members().
   [[nodiscard]] std::vector<PipelineOutput> raycast_all(
       const RaycastCamera& camera);
@@ -77,8 +81,6 @@ class PipelineSet {
   std::vector<Member> members_;
   std::size_t reference_index_{};
   int compare_every_n_frames_{};
-  std::optional<HostVolume> reference_staging_;
-  std::optional<HostVolume> member_staging_;
 };
 
 }  // namespace kinectfusion

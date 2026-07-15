@@ -19,6 +19,7 @@ template <typename PixelT>
 class Image<PixelT, MemorySpace::kDevice> {
  public:
   using value_type = PixelT;
+  using DevicePixelBuf = cuda::DeviceBuffer<PixelT>;
 
   static constexpr MemorySpace kMemorySpace = MemorySpace::kDevice;
 
@@ -28,6 +29,17 @@ class Image<PixelT, MemorySpace::kDevice> {
       : width_(width),
         height_(height),
         buffer_(checked_pixel_count(width, height)) {}
+
+  // Host to device into fresh image, no zero initialization.
+  [[nodiscard]] static Image uploaded(HostImageView<const PixelT> source) {
+    Image image;
+    image.width_ = source.width;
+    image.height_ = source.height;
+    image.buffer_ = DevicePixelBuf::uninitialized(
+        checked_pixel_count(source.width, source.height));
+    image.buffer_.copy_from_host(source.data, image.buffer_.size());
+    return image;
+  }
 
   ~Image() = default;
 
@@ -98,7 +110,7 @@ class Image<PixelT, MemorySpace::kDevice> {
 
   std::size_t width_{};
   std::size_t height_{};
-  cuda::DeviceBuffer<PixelT> buffer_;
+  DevicePixelBuf buffer_;
 };
 
 template <typename PixelT>

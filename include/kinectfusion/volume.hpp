@@ -13,8 +13,12 @@
 
 namespace kinectfusion {
 
+// TSDF of unobserved space
+// Fresh volumes are filled with it
+inline constexpr float kUnobservedTsdf = 1.0F;
+
 struct alignas(2 * sizeof(float)) Voxel {
-  float distance{1.0F};
+  float distance{kUnobservedTsdf};
   float weight{0.0F};
 
   // The accumulated weight saturates at max_weight.
@@ -53,6 +57,13 @@ struct SurfaceMaps {
   image_proc::Vector3fImage points;
   image_proc::Vector3fImage normals;
   image_proc::ColorImage colors;
+
+  [[nodiscard]] static SurfaceMaps allocate(std::size_t width,
+                                            std::size_t height) {
+    return {.points = {width, height},
+            .normals = {width, height},
+            .colors = {width, height}};
+  }
 };
 
 // IsConst toggles the pointee types, so the mutable and read-only views share
@@ -68,7 +79,19 @@ struct SurfaceMapsView {
   image_proc::ImageView<Pointee<std::uint32_t>, Space> colors;
 
   static constexpr MemorySpace kMemorySpace = Space;
+
+  // Mutable views convert to read-only views implicitly, like std::span.
+  template <bool TargetConst = true>
+    requires(TargetConst && !IsConst)
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+  // NOLINTNEXTLINE(hicpp-explicit-conversions)
+  operator SurfaceMapsView<Space, TargetConst>() const {
+    return {.points = points, .normals = normals, .colors = colors};
+  }
 };
+
+template <MemorySpace Space>
+using ConstSurfaceMapsView = SurfaceMapsView<Space, true>;
 
 using HostSurfaceMapsView = SurfaceMapsView<MemorySpace::kHost>;
 using DeviceSurfaceMapsView = SurfaceMapsView<MemorySpace::kDevice>;
@@ -177,6 +200,9 @@ struct VolumeView {
   }
 };
 
+template <MemorySpace Space>
+using ConstVolumeView = VolumeView<Space, true>;
+
 using HostVolumeView = VolumeView<MemorySpace::kHost>;
 using DeviceVolumeView = VolumeView<MemorySpace::kDevice>;
 using ConstHostVolumeView = VolumeView<MemorySpace::kHost, true>;
@@ -196,6 +222,19 @@ struct SpaceTraits<MemorySpace::kHost> {
     return Buffer<T>(count);
   }
 };
+
+// Reductions over one memory space's volume views
+template <MemorySpace Space>
+class VolumeReduction;
+
+template <>
+class VolumeReduction<MemorySpace::kHost> {
+ public:
+  [[nodiscard]] static std::size_t observed_voxel_count(
+      const ConstHostVolumeView& volume);
+};
+
+using HostVolumeReduction = VolumeReduction<MemorySpace::kHost>;
 
 // Each specialization is defined in the translation unit that can compile it
 template <MemorySpace To, MemorySpace From>
@@ -233,21 +272,11 @@ class BasicVolume {
     Transfer<Space, From>::copy(view(), source.view());
   }
 
-  [[nodiscard]] std::size_t observed_voxel_count() const {
-    std::size_t count = 0;
-    for (const Voxel& voxel : voxels_) {
-      if (voxel.weight > 0.0F) {
-        ++count;
-      }
-    }
-    return count;
-  }
-
   [[nodiscard]] VolumeView<Space> view() {
     return view_as<VolumeView<Space>>(*this);
   }
-  [[nodiscard]] VolumeView<Space, true> view() const {
-    return view_as<VolumeView<Space, true>>(*this);
+  [[nodiscard]] ConstVolumeView<Space> view() const {
+    return view_as<ConstVolumeView<Space>>(*this);
   }
 
  private:

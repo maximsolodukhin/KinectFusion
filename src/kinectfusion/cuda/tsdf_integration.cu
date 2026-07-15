@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <kinectfusion/cuda/check.cuh>
+#include <kinectfusion/cuda/launch.cuh>
 #include <kinectfusion/tsdf_integration.cuh>
 #include <variant>
 
@@ -9,9 +10,8 @@ namespace {
 
 // One thread per (x, y) column sweeping z
 template <TsdfUpdateRule<MemorySpace::kDevice> Rule>
-__global__ void integrate_kernel(
-    VolumeView<MemorySpace::kDevice> volume,
-    IntegrationContext<MemorySpace::kDevice> context, Rule rule) {
+__global__ void integrate_kernel(DeviceVolumeView volume,
+                                 DeviceIntegrationContext context, Rule rule) {
   const std::size_t x = (blockIdx.x * blockDim.x) + threadIdx.x;
   const std::size_t y = (blockIdx.y * blockDim.y) + threadIdx.y;
   const Size3 resolution = volume.resolution();
@@ -23,33 +23,25 @@ __global__ void integrate_kernel(
   }
 }
 
-[[nodiscard]] unsigned int ceil_div(std::size_t count, unsigned int divisor) {
-  return static_cast<unsigned int>((count + divisor - 1) / divisor);
-}
-
 }  // namespace
 
 DeviceDepthFrame DeviceDepthFrame::upload(const DepthFrame& frame) {
+  using DeviceDepthImg = image_proc::DeviceDepthImage;
+  using DeviceColorImg = image_proc::DeviceColorImage;
+  using DeviceVec3fImg = image_proc::DeviceVector3fImage;
   const HostDepthFrameView host = frame.view();
 
   DeviceDepthFrame device;
   device.intrinsics_ = host.intrinsics;
-  device.rotation_ = host.rotation;
-  device.translation_ = host.translation;
+  device.world_to_camera_ = host.world_to_camera;
   if (host.depth.data != nullptr) {
-    device.depth_ =
-        image_proc::DeviceDepthImage{host.depth.width, host.depth.height};
-    device.depth_.copy_from(host.depth);
+    device.depth_ = DeviceDepthImg::uploaded(host.depth);
   }
   if (host.color.data != nullptr) {
-    device.color_ =
-        image_proc::DeviceColorImage{host.color.width, host.color.height};
-    device.color_.copy_from(host.color);
+    device.color_ = DeviceColorImg::uploaded(host.color);
   }
   if (host.normals.data != nullptr) {
-    device.normals_ = image_proc::DeviceVector3fImage{host.normals.width,
-                                                      host.normals.height};
-    device.normals_.copy_from(host.normals);
+    device.normals_ = DeviceVec3fImg::uploaded(host.normals);
   }
   return device;
 }
@@ -59,17 +51,15 @@ DeviceDepthFrameView DeviceDepthFrame::view() const {
                               .color = color_.view(),
                               .normals = normals_.view(),
                               .intrinsics = intrinsics_,
-                              .rotation = rotation_,
-                              .translation = translation_};
+                              .world_to_camera = world_to_camera_};
 }
 
-void DeviceIntegrationSweep::run(
-    const VolumeView<MemorySpace::kDevice>& volume,
-    const IntegrationContext<MemorySpace::kDevice>& context,
-    const TsdfRuleVariant& rule) {
+void DeviceIntegrationSweep::run(const DeviceVolumeView& volume,
+                                 const DeviceIntegrationContext& context,
+                                 const TsdfRuleVariant& rule) {
   constexpr dim3 kBlock{16, 16};
-  const dim3 grid{ceil_div(volume.resolution().x, kBlock.x),
-                  ceil_div(volume.resolution().y, kBlock.y)};
+  const dim3 grid{cuda::ceil_div(volume.resolution().x, kBlock.x),
+                  cuda::ceil_div(volume.resolution().y, kBlock.y)};
   std::visit(
       [&](const auto& concrete) {
         integrate_kernel<<<grid, kBlock>>>(volume, context, concrete);

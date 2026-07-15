@@ -71,6 +71,9 @@ template <typename T>
     }
   }
   require(!config.name.empty(), "Every [[pipeline]] requires a name");
+  // Names label CSV columns and output subdirectories.
+  require(config.name.find(',') == std::string::npos,
+          "Pipeline names must not contain commas");
   return config;
 }
 
@@ -100,19 +103,31 @@ std::string_view tsdf_rule_name(const kinectfusion::TsdfRuleVariant& rule) {
       rule);
 }
 
+const std::map<std::string, kinectfusion::MemorySpace, std::less<>>&
+memory_space_names() {
+  static const std::map<std::string, kinectfusion::MemorySpace, std::less<>>
+      kNames{{"cpu", kinectfusion::MemorySpace::kHost},
+             {"cuda", kinectfusion::MemorySpace::kDevice}};
+  return kNames;
+}
+
 kinectfusion::MemorySpace memory_space_from_name(std::string_view name) {
-  if (name == "cpu") {
-    return kinectfusion::MemorySpace::kHost;
-  }
-  if (name == "cuda") {
-    return kinectfusion::MemorySpace::kDevice;
+  const auto& names = memory_space_names();
+  const auto found = names.find(name);
+  if (found != names.end()) {
+    return found->second;
   }
   fail(std::string{"Unknown memory space '"} + std::string{name} +
        "' (expected 'cpu' or 'cuda')");
 }
 
 std::string_view memory_space_name(kinectfusion::MemorySpace space) {
-  return space == kinectfusion::MemorySpace::kHost ? "cpu" : "cuda";
+  for (const auto& [name, value] : memory_space_names()) {
+    if (value == space) {
+      return name;
+    }
+  }
+  fail("Memory space has no registered name");
 }
 
 kinectfusion::PipelineSetConfig parse_pipeline_set(

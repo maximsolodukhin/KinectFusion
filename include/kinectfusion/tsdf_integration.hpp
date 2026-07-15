@@ -29,15 +29,14 @@ struct TsdfIntegrationOptions {
 };
 
 // One depth-camera observation as non-owning views; an empty view means the
-// input is absent. world_to_camera arrives split into rotation/translation.
+// input is absent.
 template <MemorySpace Space = MemorySpace::kHost>
 struct DepthFrameView {
   image_proc::ImageView<const std::uint16_t, Space> depth{};
   image_proc::ImageView<const std::uint32_t, Space> color{};
   image_proc::ImageView<const Vec3f, Space> normals{};
   CameraIntrinsics intrinsics{};
-  Mat3f rotation{};
-  Vec3f translation{};
+  RigidTransform world_to_camera{};
 };
 
 using HostDepthFrameView = DepthFrameView<MemorySpace::kHost>;
@@ -53,14 +52,8 @@ struct DepthFrame {
   Eigen::Matrix4f world_to_camera{Eigen::Matrix4f::Identity()};
 
   [[nodiscard]] HostDepthFrameView view() const {
-    auto rotation =
-        from_eigen(Eigen::Matrix3f{world_to_camera.block<3, 3>(0, 0)});
-    auto translation =
-        from_eigen(Eigen::Vector3f{world_to_camera.block<3, 1>(0, 3)});
-
     HostDepthFrameView result{.intrinsics = intrinsics,
-                              .rotation = rotation,
-                              .translation = translation};
+                              .world_to_camera = from_eigen(world_to_camera)};
     if (depth != nullptr) {
       result.depth = depth->view();
     }
@@ -104,7 +97,7 @@ class IntegrationContext {
 
   [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Vec3f
   to_camera(const Vec3f& world_point) const {
-    return (frame_.rotation * world_point) + frame_.translation;
+    return frame_.world_to_camera * world_point;
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Pixel>
@@ -226,6 +219,9 @@ class IntegrationContext {
   DepthFrameView<Space> frame_;
   TsdfIntegrationOptions options_;
 };
+
+using HostIntegrationContext = IntegrationContext<MemorySpace::kHost>;
+using DeviceIntegrationContext = IntegrationContext<MemorySpace::kDevice>;
 
 // The contract a TSDF update rule satisfies in every memory space. Each rule
 // is one ablation variant and, in the CUDA port, one kernel instantiation.

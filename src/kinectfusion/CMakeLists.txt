@@ -46,7 +46,9 @@ target_sources(
           volume.cpp)
 
 if(KINECTFUSION_HAS_CUDA)
-  target_sources(kinectfusion PRIVATE cuda/device_pipeline.cu cuda/tsdf_integration.cu)
+  target_sources(kinectfusion PRIVATE cuda/device_pipeline.cu cuda/device_volume.cu
+                                      cuda/icp_correspondence.cu cuda/raycasting.cu
+                                      cuda/tsdf_integration.cu)
   target_compile_definitions(kinectfusion PRIVATE KINECTFUSION_HAS_CUDA)
   set_target_properties(kinectfusion PROPERTIES CUDA_STANDARD 20)
   target_compile_options(kinectfusion

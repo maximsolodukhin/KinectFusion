@@ -214,7 +214,8 @@ TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
   integrator.integrate(volume.view(),
                        {.depth = &depth, .intrinsics = intrinsics});
 
-  REQUIRE(volume.observed_voxel_count() > 0);
+  REQUIRE(kinectfusion::HostVolumeReduction::observed_voxel_count(
+              volume.view()) > 0);
 
   const kinectfusion::Raycaster raycaster{};
   const auto maps =
@@ -236,7 +237,10 @@ TEST_CASE("Volume data copies between matching host volumes", "[volume]") {
   kinectfusion::HostVolume destination{synthetic_volume_geometry()};
   destination.copy_from(source);
 
-  REQUIRE(destination.observed_voxel_count() == source.observed_voxel_count());
+  REQUIRE(
+      kinectfusion::HostVolumeReduction::observed_voxel_count(
+          destination.view()) ==
+      kinectfusion::HostVolumeReduction::observed_voxel_count(source.view()));
   const auto deviation =
       kinectfusion::Comparator::compare(destination.view(), source.view());
   REQUIRE(deviation.compared_voxels > 0);
@@ -306,7 +310,7 @@ TEST_CASE("TSDF update rules produce measurably different volumes",
   REQUIRE(identical.max_weight_delta == 0.0F);
 }
 
-TEST_CASE("Pipeline factory falls back to host execution", "[pipeline]") {
+TEST_CASE("Pipeline factory always serves device requests", "[pipeline]") {
   const auto depth = flat_depth_image(kFixtureDepth1m);
 
   auto creation = kinectfusion::Pipeline::create(
@@ -314,8 +318,9 @@ TEST_CASE("Pipeline factory falls back to host execution", "[pipeline]") {
        .space = kinectfusion::MemorySpace::kDevice,
        .volume = synthetic_volume_geometry()});
   REQUIRE(creation.pipeline != nullptr);
-  // No device support on this branch: the request degrades with a reason.
-  REQUIRE_FALSE(creation.fallback_reason.empty());
+  // Without CUDA the request degrades to host execution with a reason; on a
+  // CUDA build with a live device it is served natively with none. Either
+  // way the pipeline below must work.
 
   creation.pipeline->integrate(
       {.depth = &depth, .intrinsics = synthetic_intrinsics()});
@@ -351,7 +356,8 @@ TEST_CASE("Factory pipeline matches a directly composed pipeline",
   REQUIRE(deviation.max_distance_delta == 0.0F);
   REQUIRE(deviation.max_weight_delta == 0.0F);
   REQUIRE(creation.pipeline->observed_voxel_count() ==
-          direct_volume.observed_voxel_count());
+          kinectfusion::HostVolumeReduction::observed_voxel_count(
+              direct_volume.view()));
 }
 
 TEST_CASE("Pipeline set compares variants against the reference",
@@ -464,12 +470,10 @@ TEST_CASE("Projective ICP converges on identical synthetic maps",
                                          .min_normal_dot = 0.99F,
                                          .min_system_eigenvalue = 1.0e-12F,
                                          .max_condition_number = 1.0e12F}};
-  const auto result =
-      tracker.estimate_pose({.live = view(surface.live),
-                             .model = {.vertices = surface.model.points.view(),
-                                       .normals = surface.model.normals.view()},
-                             .model_intrinsics = intrinsics,
-                             .iterations = 3});
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(surface.live), view(surface.model));
+  const auto result = tracker.estimate_pose(surfaces, intrinsics,
+                                            Eigen::Matrix4f::Identity(), 3);
 
   REQUIRE(result.result.has_value());
   REQUIRE(std::holds_alternative<kinectfusion::Converged>(*result.result));
@@ -501,13 +505,12 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
                                          .min_normal_dot = 0.9F,
                                          .min_system_eigenvalue = 1.0e-12F,
                                          .max_condition_number = 1.0e12F}};
-  const auto result =
-      tracker.estimate_pose({.live = view(surface.live),
-                             .model = {.vertices = surface.model.points.view(),
-                                       .normals = surface.model.normals.view()},
-                             .model_intrinsics = intrinsics,
-                             .initial_camera_to_world = initial,
-                             .iterations = 15});
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(surface.live), view(surface.model));
+  const auto result = tracker.estimate_pose({.surfaces = surfaces,
+                                             .model_intrinsics = intrinsics,
+                                             .initial_camera_to_world = initial,
+                                             .iterations = 15});
 
   REQUIRE(result.result.has_value());
   REQUIRE(std::holds_alternative<kinectfusion::Converged>(*result.result));
@@ -537,11 +540,10 @@ TEST_CASE("Projective ICP rejects empty correspondence sets",
 
   const kinectfusion::ProjectiveIcpTracker tracker{
       kinectfusion::ProjectiveIcpOptions{.min_correspondences = 1}};
-  const auto result = tracker.estimate_pose(
-      {.live = view(std::as_const(live_maps)),
-       .model = {.vertices = std::as_const(model_maps).points.view(),
-                 .normals = std::as_const(model_maps).normals.view()},
-       .iterations = 10});
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(live_maps), view(model_maps));
+  const auto result =
+      tracker.estimate_pose({.surfaces = surfaces, .iterations = 10});
 
   REQUIRE_FALSE(result.result.has_value());
   REQUIRE(result.result.error() ==

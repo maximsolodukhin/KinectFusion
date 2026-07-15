@@ -75,7 +75,9 @@ function(
        STREQUAL
        "")
       if(NOT MSVC)
-        target_compile_options(${project_name} INTERFACE -fsanitize=${LIST_OF_SANITIZERS})
+        # see cmake/Hardening.cmake, turned off for now
+        target_compile_options(${project_name}
+                               INTERFACE "$<$<COMPILE_LANGUAGE:C,CXX>:-fsanitize=${LIST_OF_SANITIZERS}>")
         target_link_options(${project_name} INTERFACE -fsanitize=${LIST_OF_SANITIZERS})
       else()
         string(FIND "$ENV{PATH}" "$ENV{VSINSTALLDIR}" index_of_vs_install_dir)

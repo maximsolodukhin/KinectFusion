@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/cuda/device_buffer.cuh>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/depth_processing.cuh>
 #include <kinectfusion/device_volume.cuh>
 #include <kinectfusion/icp_correspondence.hpp>
@@ -9,7 +10,6 @@
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/volume.hpp>
-#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -73,20 +73,31 @@ static_assert(kinectfusion::TsdfUpdateRule<kinectfusion::ClassicTsdf,
                                            MemorySpace::kDevice>);
 static_assert(kinectfusion::TsdfUpdateRule<kinectfusion::AngleWeightedTsdf,
                                            MemorySpace::kDevice>);
-static_assert(
-    std::same_as<decltype(kinectfusion::DeviceDepthFrameView::depth),
-                 kinectfusion::image_proc::DeviceImageView<const std::uint16_t>>);
+static_assert(std::same_as<
+              decltype(kinectfusion::DeviceDepthFrameView::depth),
+              kinectfusion::image_proc::DeviceImageView<const std::uint16_t>>);
+
+// Kernel arguments are passed by value through the launch; everything the
+// per-element layer closes over must be trivially copyable.
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::DepthFrameView<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::IntegrationContext<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::VolumeView<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::SurfaceRaycast<MemorySpace::kDevice>>);
 
 // The ICP per-pixel layer is space-generic; its accumulator is the reduction
 // payload the correspondence kernel hands back to the host solve.
 static_assert(std::is_trivially_copyable_v<kinectfusion::IcpNormalEquations>);
-static_assert(
-    std::same_as<
-        decltype(std::declval<
-                     const kinectfusion::CorrespondenceSearch<
-                         MemorySpace::kDevice>&>()
-                     .match(std::size_t{}, std::size_t{})),
-        std::optional<kinectfusion::IcpCorrespondence>>);
+static_assert(std::same_as<
+              decltype(std::declval<const kinectfusion::CorrespondenceSearch<
+                           MemorySpace::kDevice>&>()
+                           .match(std::size_t{}, std::size_t{})),
+              kinectfusion::compat::optional<kinectfusion::IcpCorrespondence>>);
 static_assert(std::constructible_from<
               kinectfusion::CorrespondenceSearch<MemorySpace::kDevice>,
               const kinectfusion::ConstDeviceVertexNormalMapsView&,

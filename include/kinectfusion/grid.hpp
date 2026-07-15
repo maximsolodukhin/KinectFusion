@@ -15,7 +15,7 @@ struct Pixel {
   std::size_t x{};
   std::size_t y{};
 
-  [[nodiscard]] Vec2f as_vector() const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Vec2f as_vector() const {
     return Vec2f{.x = static_cast<float>(x), .y = static_cast<float>(y)};
   }
 

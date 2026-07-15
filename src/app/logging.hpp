@@ -83,8 +83,7 @@ struct CsvSpecFormatter {
 }  // namespace app
 
 template <>
-struct std::formatter<kinectfusion::VolumeComparison>
-    : app::CsvSpecFormatter {
+struct std::formatter<kinectfusion::VolumeComparison> : app::CsvSpecFormatter {
   auto format(const kinectfusion::VolumeComparison& comparison,
               std::format_context& ctx) const {
     return std::vformat_to(
@@ -132,8 +131,9 @@ struct std::formatter<kinectfusion::PipelineComparison>
       }
       return std::format_to(out, ",,,,,,");
     }
-    auto out = std::format_to(ctx.out(), "pipeline '{}' vs reference: "
-                                         "volume[{}]",
+    auto out = std::format_to(ctx.out(),
+                              "pipeline '{}' vs reference: "
+                              "volume[{}]",
                               comparison.name, comparison.volume);
     if (comparison.surface) {
       return std::format_to(out, " surface[{}]", *comparison.surface);

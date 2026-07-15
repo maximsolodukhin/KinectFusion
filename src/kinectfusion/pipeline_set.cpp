@@ -52,13 +52,20 @@ PipelineSet PipelineSet::create(const PipelineSetConfig& config) {
 }
 
 void PipelineSet::integrate(const DepthFrame& frame) {
+  DeviceFrameCache shared_upload;
   for (const Member& member : members_) {
-    member.pipeline->integrate(frame);
+    member.pipeline->integrate(frame, shared_upload);
   }
 }
 
 SurfaceMaps PipelineSet::raycast_reference(const RaycastCamera& camera) {
   return members_.at(reference_index_).pipeline->raycast(camera);
+}
+
+TrackingSurfacesVariant PipelineSet::tracking_surfaces(
+    const RaycastCamera& camera, const ConstHostVertexNormalMapsView& live) {
+  return members_.at(reference_index_)
+      .pipeline->tracking_surfaces(camera, live);
 }
 
 std::vector<PipelineOutput> PipelineSet::raycast_all(
@@ -89,8 +96,11 @@ std::vector<PipelineComparison> PipelineSet::compare_members(
     const std::vector<PipelineOutput>* outputs) {
   auto* reference_pipeline = members_.at(reference_index_).pipeline.get();
 
+  // Staging volumes are locals so device copies are freed after the compare.
+  std::optional<HostVolume> reference_staging;
+  std::optional<HostVolume> member_staging;
   const ConstHostVolumeView reference_view =
-      reference_pipeline->host_view(reference_staging_);
+      reference_pipeline->host_view(reference_staging);
 
   std::vector<PipelineComparison> comparisons;
   comparisons.reserve(members_.size() - 1);
@@ -101,7 +111,7 @@ std::vector<PipelineComparison> PipelineSet::compare_members(
     }
 
     const Member& member = members_.at(index);
-    auto pipeline_view = member.pipeline->host_view(member_staging_);
+    auto pipeline_view = member.pipeline->host_view(member_staging);
     auto pipeline_name = member.pipeline->name();
     auto volume_comparison = Comparator::compare(pipeline_view, reference_view);
 

@@ -7,6 +7,7 @@
 #include <kinectfusion/device_volume.cuh>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/image_proc/device_image.cuh>
+#include <kinectfusion/raycasting.cuh>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/volume.hpp>
@@ -87,23 +88,30 @@ static_assert(std::is_trivially_copyable_v<
               kinectfusion::VolumeView<MemorySpace::kDevice>>);
 static_assert(std::is_trivially_copyable_v<
               kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
-static_assert(std::is_trivially_copyable_v<
-              kinectfusion::SurfaceRaycast<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<kinectfusion::DeviceSurfaceRaycast>);
+
+// Device surface maps are a move-only owner like the device images they hold.
+static_assert(!std::copy_constructible<kinectfusion::DeviceSurfaceMaps>);
+static_assert(std::movable<kinectfusion::DeviceSurfaceMaps>);
+static_assert(std::same_as<
+              decltype(std::declval<kinectfusion::DeviceSurfaceMaps&>().view()),
+              kinectfusion::DeviceSurfaceMapsView>);
 
 // The ICP per-pixel layer is space-generic; its accumulator is the reduction
 // payload the correspondence kernel hands back to the host solve.
 static_assert(std::is_trivially_copyable_v<kinectfusion::IcpNormalEquations>);
-static_assert(std::same_as<
-              decltype(std::declval<const kinectfusion::CorrespondenceSearch<
-                           MemorySpace::kDevice>&>()
-                           .match(std::size_t{}, std::size_t{})),
-              kinectfusion::compat::optional<kinectfusion::IcpCorrespondence>>);
-static_assert(std::constructible_from<
-              kinectfusion::CorrespondenceSearch<MemorySpace::kDevice>,
-              const kinectfusion::ConstDeviceVertexNormalMapsView&,
-              const kinectfusion::ConstDeviceVertexNormalMapsView&,
-              const kinectfusion::CameraIntrinsics&,
-              const kinectfusion::IcpIterationTransforms&,
-              const kinectfusion::CorrespondenceGates&>);
+static_assert(
+    std::is_trivially_copyable_v<kinectfusion::DeviceCorrespondenceSearch>);
+static_assert(
+    std::same_as<
+        decltype(std::declval<const kinectfusion::DeviceCorrespondenceSearch&>()
+                     .match(std::size_t{}, std::size_t{})),
+        kinectfusion::compat::optional<kinectfusion::IcpCorrespondence>>);
+static_assert(
+    std::constructible_from<kinectfusion::DeviceCorrespondenceSearch,
+                            const kinectfusion::DeviceTrackingSurfaces&,
+                            const kinectfusion::CameraIntrinsics&,
+                            const kinectfusion::IcpIterationTransforms&,
+                            const kinectfusion::CorrespondenceGates&>);
 
 }  // namespace

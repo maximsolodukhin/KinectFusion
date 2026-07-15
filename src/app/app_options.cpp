@@ -12,7 +12,6 @@
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
-#include <map>
 #include <string>
 
 #include "pipeline_config.hpp"
@@ -192,11 +191,8 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_option("--space", app_options.space,
                  "Memory space to run the pipeline in ('cpu' or 'cuda'; "
                  "falls back to cpu with a warning when unavailable).")
-      ->transform(CLI::CheckedTransformer(
-          std::map<std::string, kinectfusion::MemorySpace>{
-              {"cpu", kinectfusion::MemorySpace::kHost},
-              {"cuda", kinectfusion::MemorySpace::kDevice}},
-          CLI::ignore_case));
+      ->transform(
+          CLI::CheckedTransformer(memory_space_names(), CLI::ignore_case));
   app.add_option(
       "--pipelines", app_options.pipelines_config,
       "TOML file describing an ablation pipeline set ([[pipeline]] tables); "

@@ -9,6 +9,8 @@
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
+#include <optional>
+#include <stdexcept>
 
 namespace kinectfusion {
 namespace {
@@ -17,24 +19,62 @@ namespace {
 // identity to keep the axis direction well-defined when normalising by angle.
 constexpr float kMinimumRotationAngle = 1.0e-12F;
 
-[[nodiscard]] bool sizes_match(const ConstHostVertexNormalMapsView& maps) {
+// Vertex and normal maps are produced together (by the depth pipeline and
+// the raycaster), so a size mismatch is a caller error rather than a
+// tracking failure. The expected channel makes it impossible to ignore.
+template <MemorySpace Space>
+[[nodiscard]] bool sizes_match(const ConstVertexNormalMapsView<Space>& maps) {
   return maps.vertices.width == maps.normals.width &&
          maps.vertices.height == maps.normals.height;
+}
+
+template <MemorySpace Space>
+[[nodiscard]] std::optional<IcpOutcome> rejected_input(
+    const BasicTrackingRequest<Space>& request) {
+  if (sizes_match(request.surfaces.live) &&
+      sizes_match(request.surfaces.model)) {
+    return std::nullopt;
+  }
+  IcpOutcome outcome{.pose = request.initial_camera_to_world};
+  outcome.result = std::unexpected(IcpFailure::kInvalidInput);
+  return outcome;
 }
 
 }  // namespace
 
 IcpOutcome ProjectiveIcpTracker::estimate_pose(
     const TrackingRequest& request) const {
-  IcpOutcome outcome{.pose = request.initial_camera_to_world};
-
-  // Vertex and normal maps are produced together (by the depth pipeline and
-  // the raycaster), so a size mismatch is a caller error rather than a
-  // tracking failure. The expected channel makes it impossible to ignore.
-  if (!sizes_match(request.live) || !sizes_match(request.model)) {
-    outcome.result = std::unexpected(IcpFailure::kInvalidInput);
-    return outcome;
+  if (const auto rejected = rejected_input(request)) {
+    return *rejected;
   }
+  return estimate_with(request, [&](const IcpIterationTransforms& transforms) {
+    return find_correspondences(request, transforms);
+  });
+}
+
+// Instance-shaped for API symmetry even when the CUDA-less body ignores state.
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
+IcpOutcome ProjectiveIcpTracker::estimate_pose(
+    const DeviceTrackingRequest& request) const {
+#ifdef KINECTFUSION_HAS_CUDA
+  if (const auto rejected = rejected_input(request)) {
+    return *rejected;
+  }
+  return estimate_with(request, [&](const IcpIterationTransforms& transforms) {
+    return DeviceCorrespondenceSweep::run(DeviceCorrespondenceSearch{
+        request.surfaces, request.model_intrinsics, transforms, gates()});
+  });
+#else
+  static_cast<void>(request);
+  throw std::logic_error("KinectFusion was built without CUDA support");
+#endif
+}
+
+template <MemorySpace Space, typename FindEquations>
+IcpOutcome ProjectiveIcpTracker::estimate_with(
+    const BasicTrackingRequest<Space>& request,
+    const FindEquations& find_equations) const {
+  IcpOutcome outcome{.pose = request.initial_camera_to_world};
 
   const Eigen::Matrix4f model_world_to_camera =
       request.model_camera_to_world.inverse();
@@ -42,7 +82,7 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
        ++iteration) {
     const IcpIterationTransforms transforms =
         IcpIterationTransforms::from_poses(outcome.pose, model_world_to_camera);
-    const auto equations = find_correspondences(request, transforms);
+    const auto equations = find_equations(transforms);
     outcome.diagnostics.correspondences = equations.count;
     if (equations.count > 0) {
       outcome.diagnostics.mean_point_distance =
@@ -96,11 +136,9 @@ IcpNormalEquations ProjectiveIcpTracker::find_correspondences(
     const TrackingRequest& request,
     const IcpIterationTransforms& transforms) const {
   IcpNormalEquations equations;
-  const CorrespondenceSearch<MemorySpace::kHost> search{
-      request.live, request.model, request.model_intrinsics, transforms,
-      CorrespondenceGates{.max_point_distance = options_.max_point_distance,
-                          .min_normal_dot = options_.min_normal_dot}};
-  const auto& live = request.live.vertices;
+  const HostCorrespondenceSearch search{
+      request.surfaces, request.model_intrinsics, transforms, gates()};
+  const auto& live = request.surfaces.live.vertices;
   for (const auto [x, y] : PixelIndices{live.width, live.height}) {
     if (const auto match = search.match(x, y)) {
       equations.accumulate(*match);

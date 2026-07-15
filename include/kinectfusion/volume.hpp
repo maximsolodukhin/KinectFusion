@@ -1,9 +1,9 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_VOLUME_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_VOLUME_HPP
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
@@ -23,7 +23,8 @@ struct alignas(2 * sizeof(float)) Voxel {
                                                      float max_weight) const {
     float weighted_avg =
         weighted_average(distance, weight, observed, observation_weight);
-    float truncated_weight = std::min(weight + observation_weight, max_weight);
+    float truncated_weight =
+        compat::min(weight + observation_weight, max_weight);
 
     return {.distance = weighted_avg, .weight = truncated_weight};
   }
@@ -38,7 +39,8 @@ struct alignas(4 * sizeof(float)) ColorVoxel {
       const Vec3f& observed, float observation_weight, float max_weight) const {
     Vec3f weighted_avg =
         weighted_average(color, weight, observed, observation_weight);
-    float truncated_weight = std::min(weight + observation_weight, max_weight);
+    float truncated_weight =
+        compat::min(weight + observation_weight, max_weight);
 
     return {.color = weighted_avg, .weight = truncated_weight};
   }

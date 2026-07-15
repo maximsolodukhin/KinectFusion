@@ -58,7 +58,11 @@ class Pipeline {
   explicit Pipeline(std::string name);
 
  private:
+  // Both defined in pipeline.cpp for CPU-only builds and in the CUDA
+  // backend TU when it is compiled in.
   [[nodiscard]] static bool device_available();
+  [[nodiscard]] static std::unique_ptr<Pipeline> create_device(
+      const PipelineConfig& config);
 
   std::string name_;
 };

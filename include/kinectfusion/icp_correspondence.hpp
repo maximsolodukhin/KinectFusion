@@ -3,12 +3,11 @@
 
 #include <Eigen/Core>
 #include <array>
-#include <cmath>
 #include <cstddef>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
-#include <optional>
 #include <type_traits>
 
 namespace kinectfusion {
@@ -41,18 +40,21 @@ struct IcpNormalEquations {
   std::array<float, kIcpUpperTriangleSize> jtj{};
   std::array<float, kIcpDof> jtr{};
 
-  void accumulate(const IcpCorrespondence& correspondence) {
+  KINECTFUSION_HOST_DEVICE void accumulate(
+      const IcpCorrespondence& correspondence) {
     std::size_t entry = 0;
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-constant-array-index)
     for (std::size_t row = 0; row < kIcpDof; ++row) {
       for (std::size_t col = row; col < kIcpDof; ++col) {
-        jtj.at(entry) +=
-            correspondence.jacobian.at(row) * correspondence.jacobian.at(col);
+        jtj[entry] +=
+            correspondence.jacobian[row] * correspondence.jacobian[col];
         ++entry;
       }
     }
     for (std::size_t row = 0; row < kIcpDof; ++row) {
-      jtr.at(row) += correspondence.jacobian.at(row) * correspondence.residual;
+      jtr[row] += correspondence.jacobian[row] * correspondence.residual;
     }
+    // NOLINTEND(cppcoreguidelines-pro-bounds-constant-array-index)
     distance_sum += correspondence.distance;
     ++count;
   }
@@ -129,12 +131,12 @@ class CorrespondenceSearch {
         transforms_(transforms),
         gates_(gates) {}
 
-  [[nodiscard]] std::optional<IcpCorrespondence> match(std::size_t x,
-                                                       std::size_t y) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<IcpCorrespondence>
+  match(std::size_t x, std::size_t y) const {
     const Vec3f& live_vertex = live_.vertices.at(x, y);
     const Vec3f& live_normal = live_.normals.at(x, y);
     if (!all_finite(live_vertex) || !all_finite(live_normal)) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const Vec3f source =
@@ -142,34 +144,34 @@ class CorrespondenceSearch {
     const Vec3f source_in_model =
         (transforms_.model_rotation * source) + transforms_.model_translation;
     if (!all_finite(source_in_model) || source_in_model.z <= 0.0F) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const Vec2f pixel = intrinsics_.project(source_in_model);
-    const auto model_x = std::lround(pixel.x);
-    const auto model_y = std::lround(pixel.y);
+    const auto model_x = compat::lround(pixel.x);
+    const auto model_y = compat::lround(pixel.y);
     if (model_x < 0 || model_y < 0) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     const auto col = static_cast<std::size_t>(model_x);
     const auto row = static_cast<std::size_t>(model_y);
     if (col >= model_.vertices.width || row >= model_.vertices.height) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const Vec3f& model_vertex = model_.vertices.at(col, row);
     const Vec3f& model_normal = model_.normals.at(col, row);
     if (!all_finite(model_vertex) || !all_finite(model_normal)) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const Vec3f source_normal = normalized(transforms_.rotation * live_normal);
     const float distance = norm(source - model_vertex);
     if (distance > gates_.max_point_distance) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     if (dot(source_normal, model_normal) < gates_.min_normal_dot) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const Vec3f rotational = cross(source, model_normal);

@@ -62,7 +62,10 @@ if(KINECTFUSION_HAS_CUDA)
     PRIVATE kinectfusion::kinectfusion_warnings
             kinectfusion::kinectfusion_options
             kinectfusion::kinectfusion)
-  set_target_properties(cuda_type_assertions PROPERTIES CUDA_STANDARD 23)
+  # no c++ 23 on cuda 13.1 on lxhalle
+  set_target_properties(cuda_type_assertions PROPERTIES CUDA_STANDARD 20)
+  target_compile_options(cuda_type_assertions
+                         PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
   add_dependencies(tests cuda_type_assertions)
 endif()
 

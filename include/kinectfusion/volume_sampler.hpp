@@ -5,9 +5,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
-#include <optional>
 #include <type_traits>
 
 namespace kinectfusion {
@@ -24,13 +24,17 @@ class VolumeSampler {
  public:
   explicit VolumeSampler(VolumeView<Space, true> volume) : volume_(volume) {}
 
-  [[nodiscard]] float voxel_size() const { return volume_.voxel_size(); }
-  [[nodiscard]] float truncation_distance() const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float voxel_size() const {
+    return volume_.voxel_size();
+  }
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float truncation_distance()
+      const {
     return volume_.truncation_distance();
   }
 
   // Converts to grid coordinates before bounds before checking bounds.
-  [[nodiscard]] bool contains(const Vec3f& point) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE bool contains(
+      const Vec3f& point) const {
     const Vec3f local = (point - volume_.origin()) / volume_.voxel_size();
     // Scalar = float, no truncation
     return in_bounds(local.x, local.y, local.z);
@@ -39,10 +43,10 @@ class VolumeSampler {
   // Trilinear TSDF interpolation at `point`. `kRequireAll` returns nullopt if
   // at least one of surrounding voxels is unobserved, while `kSkipMissing`
   // drops missing/uninitialised corners and reweights the rest.
-  [[nodiscard]] std::optional<float> tsdf(const Vec3f& point,
-                                          CornerPolicy corner_policy) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<float> tsdf(
+      const Vec3f& point, CornerPolicy corner_policy) const {
     if (!contains(point)) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const GridSample sample = grid_sample(point);
@@ -60,19 +64,20 @@ class VolumeSampler {
       // sample; otherwise the corner is skipped and the remaining ones
       // reweight.
       if (corner_policy == CornerPolicy::kRequireAll) {
-        return std::nullopt;
+        return compat::nullopt;
       }
     }
     if (weight_sum <= kMinimumTrilinearWeightSum) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const float distance = accumulated / weight_sum;
-    return std::isfinite(distance) ? std::optional<float>{distance}
-                                   : std::nullopt;
+    return std::isfinite(distance) ? compat::optional<float>{distance}
+                                   : compat::nullopt;
   }
 
-  [[nodiscard]] std::optional<Vec3f> color(const Vec3f& point) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f> color(
+      const Vec3f& point) const {
     const GridSample sample = grid_sample(point);
     Vec3f accumulated{};
     float weight_sum = 0.0F;
@@ -85,30 +90,30 @@ class VolumeSampler {
       weight_sum += corner.weight;
     }
     if (weight_sum <= kMinimumTrilinearWeightSum) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     return accumulated / weight_sum;
   }
 
-  [[nodiscard]] std::optional<Vec3f> normal(
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f> normal(
       const Vec3f& point, CornerPolicy tsdf_corner_policy) const {
     std::array<float, 3> gradient{};
     for (std::size_t axis = 0; axis < gradient.size(); ++axis) {
       // Central difference: one voxel step either way along this axis.
-      const Vec3f offset = kAxes.at(axis) * volume_.voxel_size();
+      const Vec3f offset = axis_direction(axis) * volume_.voxel_size();
       const auto plus = tsdf(point + offset, tsdf_corner_policy);
       const auto minus = tsdf(point - offset, tsdf_corner_policy);
       if (!plus || !minus) {
-        return std::nullopt;
+        return compat::nullopt;
       }
-      gradient.at(axis) = *plus - *minus;
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+      gradient[axis] = *plus - *minus;
     }
 
-    const Vec3f direction =
-        make_vec3f(gradient.at(0), gradient.at(1), gradient.at(2));
+    const Vec3f direction = make_vec3f(gradient[0], gradient[1], gradient[2]);
     const float length = norm(direction);
     if (length <= 0.0F) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     return direction / length;
   }
@@ -122,9 +127,12 @@ class VolumeSampler {
   static constexpr Vec3f kCenterOffset =
       make_vec3f(kVoxelCenterOffset, kVoxelCenterOffset, kVoxelCenterOffset);
 
-  static constexpr std::array<Vec3f, 3> kAxes{make_vec3f(1.0F, 0.0F, 0.0F),
-                                              make_vec3f(0.0F, 1.0F, 0.0F),
-                                              make_vec3f(0.0F, 0.0F, 1.0F)};
+  // Unit vector along axis (0 x, 1 y, 2 z).
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE static constexpr Vec3f
+  axis_direction(std::size_t axis) {
+    return make_vec3f(axis == 0 ? 1.0F : 0.0F, axis == 1 ? 1.0F : 0.0F,
+                      axis == 2 ? 1.0F : 0.0F);
+  }
 
   // A voxel cube has eight corners; used both as the trilinear stencil size
   // and for the `Corner` arrays returned by `trilinear_corners`.
@@ -144,14 +152,14 @@ class VolumeSampler {
   // One axis of a trilinear weight: the linear blend between the near voxel
   // (offset 0, weight 1 - fraction) and the far voxel (offset 1, weight
   // fraction).
-  [[nodiscard]] static float axis_weight(float fraction, int offset) {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE static float axis_weight(
+      float fraction, int offset) {
     return offset == 0 ? 1.0F - fraction : fraction;
   }
 
   // Product of the per-axis weights for one corner.
-  [[nodiscard]] static float trilinear_weight(const Vec3f& fraction,
-                                              int offset_x, int offset_y,
-                                              int offset_z) {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE static float trilinear_weight(
+      const Vec3f& fraction, int offset_x, int offset_y, int offset_z) {
     return axis_weight(fraction.x, offset_x) *
            axis_weight(fraction.y, offset_y) *
            axis_weight(fraction.z, offset_z);
@@ -159,14 +167,16 @@ class VolumeSampler {
 
   template <typename Scalar>
     requires std::is_arithmetic_v<Scalar>
-  [[nodiscard]] bool in_bounds(Scalar x, Scalar y, Scalar z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE bool in_bounds(Scalar x, Scalar y,
+                                                        Scalar z) const {
     return x >= Scalar{0} && y >= Scalar{0} && z >= Scalar{0} &&
            static_cast<std::size_t>(x) < volume_.resolution().x &&
            static_cast<std::size_t>(y) < volume_.resolution().y &&
            static_cast<std::size_t>(z) < volume_.resolution().z;
   }
 
-  [[nodiscard]] GridSample grid_sample(const Vec3f& point) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE GridSample
+  grid_sample(const Vec3f& point) const {
     const Vec3f grid =
         ((point - volume_.origin()) / volume_.voxel_size()) - kCenterOffset;
     const Vec3f floored =
@@ -177,7 +187,8 @@ class VolumeSampler {
                       .fraction = grid - floored};
   }
 
-  [[nodiscard]] static std::array<Corner, kTrilinearCornerCount>
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE static std::array<
+      Corner, kTrilinearCornerCount>
   trilinear_corners(const GridSample& sample) {
     std::array<Corner, kTrilinearCornerCount> out{};
     std::size_t corner_idx = 0;
@@ -186,10 +197,11 @@ class VolumeSampler {
         for (int offset_x = 0; offset_x <= 1; ++offset_x) {
           auto weight =
               trilinear_weight(sample.fraction, offset_x, offset_y, offset_z);
-          out.at(corner_idx++) = {.x = sample.base.x + offset_x,
-                                  .y = sample.base.y + offset_y,
-                                  .z = sample.base.z + offset_z,
-                                  .weight = weight};
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+          out[corner_idx++] = {.x = sample.base.x + offset_x,
+                               .y = sample.base.y + offset_y,
+                               .z = sample.base.z + offset_z,
+                               .weight = weight};
         }
       }
     }
@@ -198,7 +210,8 @@ class VolumeSampler {
 
   // Bounds-checked corner lookups for trilinear sampling; nullptr when the
   // corner lies outside the volume.
-  [[nodiscard]] const Voxel* find_voxel(const Corner& corner) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Voxel* find_voxel(
+      const Corner& corner) const {
     if (!in_bounds(corner.x, corner.y, corner.z)) {
       return nullptr;
     }
@@ -207,7 +220,8 @@ class VolumeSampler {
                              static_cast<std::size_t>(corner.z));
   }
 
-  [[nodiscard]] const ColorVoxel* find_color_voxel(const Corner& corner) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const ColorVoxel* find_color_voxel(
+      const Corner& corner) const {
     if (!in_bounds(corner.x, corner.y, corner.z)) {
       return nullptr;
     }

@@ -2,10 +2,9 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_RGBD_HPP
 
 #include <Eigen/Core>
-#include <algorithm>
 #include <cstdint>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/vector.hpp>
-#include <optional>
 
 namespace kinectfusion {
 
@@ -82,14 +81,24 @@ struct CameraIntrinsics {
 // Packs a colour with 0..255 float channels into the RGBA8 pixel layout used
 // by image_proc::ColorImage (alpha fully opaque). Inverse of
 // `rgba_from_pixel` up to channel clamping.
-[[nodiscard]] inline std::uint32_t pixel_from_color(const Vec3f& color) {
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE std::uint32_t pixel_from_color(
+    const Vec3f& color) {
   const auto to_byte = [](float value) {
     return static_cast<std::uint32_t>(
-        std::clamp(value, 0.0F, kMaxColorChannelValueF));
+        compat::clamp(value, 0.0F, kMaxColorChannelValueF));
   };
   return to_byte(color.x) | (to_byte(color.y) << kColorGreenShift) |
          (to_byte(color.z) << kColorBlueShift) |
          (std::uint32_t{kMaxColorChannelValue} << kColorAlphaShift);
+}
+
+// RGB channels of an RGBA8 pixel as 0..255 floats;
+// `rgba_from_pixel` but for kernel-bound math.
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr Vec3f color_from_pixel(
+    std::uint32_t pixel) {
+  return make_vec3f((pixel >> kColorRedShift) & kColorChannelMask,
+                    (pixel >> kColorGreenShift) & kColorChannelMask,
+                    (pixel >> kColorBlueShift) & kColorChannelMask);
 }
 
 // Unpacks an RGBA8 pixel (as stored by image_proc::ColorImage) into bytes.
@@ -103,23 +112,22 @@ struct CameraIntrinsics {
                                 kColorChannelMask)};
 }
 
-[[nodiscard]] inline float depth_to_meters(std::uint16_t depth,
-                                           float depth_scale) {
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr float depth_to_meters(
+    std::uint16_t depth, float depth_scale) {
   return static_cast<float>(depth) / depth_scale;
 }
 
 // Converts a raw sensor sample to meters like `depth_to_meters`, but yields
 // nullopt for missing samples (zero) and depths outside [min_depth, max_depth].
-[[nodiscard]] inline std::optional<float> depth_in_range(std::uint16_t depth,
-                                                         float depth_scale,
-                                                         float min_depth,
-                                                         float max_depth) {
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE compat::optional<float>
+depth_in_range(std::uint16_t depth, float depth_scale, float min_depth,
+               float max_depth) {
   if (depth == 0) {
-    return std::nullopt;
+    return compat::nullopt;
   }
   const float meters = depth_to_meters(depth, depth_scale);
   if (meters < min_depth || meters > max_depth) {
-    return std::nullopt;
+    return compat::nullopt;
   }
   return meters;
 }

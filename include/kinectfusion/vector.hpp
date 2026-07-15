@@ -5,51 +5,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/cuda_compat.hpp>
 #include <limits>
 #include <type_traits>
-
-#ifdef __CUDACC__
-#define KINECTFUSION_HOST_DEVICE __host__ __device__
-#else
-#define KINECTFUSION_HOST_DEVICE
-#endif
-
-// Portable spelling of C99 `restrict`. Use on local pointers and function
-// parameters only (not on struct members). Examples:
-//
-// Local pointer inside a kernel:
-//
-//   __global__ void copy_kernel(image_proc::DeviceImageView<const float> in,
-//                               image_proc::DeviceImageView<float>       out) {
-//     const float* KINECTFUSION_RESTRICT src = in.data;
-//     float*       KINECTFUSION_RESTRICT dst = out.data;
-//     const std::size_t i = threadIdx.x + blockIdx.x * blockDim.x;
-//     dst[i] = src[i];
-//   }
-//
-// Function parameter:
-//
-//   void axpy(std::size_t n, float alpha,
-//             const float* KINECTFUSION_RESTRICT x,
-//             float*       KINECTFUSION_RESTRICT y) {
-//     for (std::size_t i = 0; i < n; ++i) y[i] = alpha * x[i] + y[i];
-//   }
-#if defined(_MSC_VER) && !defined(__clang__)
-#define KINECTFUSION_RESTRICT __restrict
-#else
-#define KINECTFUSION_RESTRICT __restrict__
-#endif
-
-#ifdef __CUDACC__
-#define KINECTFUSION_FORCEINLINE __forceinline__
-#elif defined(_MSC_VER) && !defined(__clang__)
-#define KINECTFUSION_FORCEINLINE __forceinline
-#else
-#define KINECTFUSION_FORCEINLINE inline __attribute__((always_inline))
-#endif
-
-#define KINECTFUSION_FORCEINLINE_DEVICE \
-  KINECTFUSION_FORCEINLINE KINECTFUSION_HOST_DEVICE
 
 namespace kinectfusion {
 
@@ -106,7 +64,7 @@ template <typename X, typename Y, typename Z>
   return {};
 }
 
-[[nodiscard]] KINECTFUSION_FORCEINLINE Vec3f invalid_vec3f() {
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Vec3f invalid_vec3f() {
   const float nan = std::numeric_limits<float>::quiet_NaN();
   return make_vec3f(nan, nan, nan);
 }

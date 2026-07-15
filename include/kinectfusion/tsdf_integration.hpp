@@ -2,16 +2,14 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_TSDF_INTEGRATION_HPP
 
 #include <Eigen/Core>
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/grid.hpp>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
-#include <optional>
 #include <variant>
 
 namespace kinectfusion {
@@ -95,37 +93,43 @@ class IntegrationContext {
                      const TsdfIntegrationOptions& options)
       : frame_(frame), options_(options) {}
 
-  [[nodiscard]] const DepthFrameView<Space>& frame() const { return frame_; }
-  [[nodiscard]] const TsdfIntegrationOptions& options() const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE const DepthFrameView<Space>&
+  frame() const {
+    return frame_;
+  }
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE const TsdfIntegrationOptions&
+  options() const {
     return options_;
   }
 
-  [[nodiscard]] Vec3f to_camera(const Vec3f& world_point) const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Vec3f
+  to_camera(const Vec3f& world_point) const {
     return (frame_.rotation * world_point) + frame_.translation;
   }
 
-  [[nodiscard]] std::optional<Pixel> project_to_pixel(
-      const Vec3f& camera_point) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Pixel>
+  project_to_pixel(const Vec3f& camera_point) const {
     if (camera_point.z <= 0.0F) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     const Vec2f pixel = frame_.intrinsics.project(camera_point);
-    const auto rounded_x = std::lround(pixel.x);
-    const auto rounded_y = std::lround(pixel.y);
+    const auto rounded_x = compat::lround(pixel.x);
+    const auto rounded_y = compat::lround(pixel.y);
     if (rounded_x < 0 || rounded_y < 0) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const auto col = static_cast<std::size_t>(rounded_x);
     const auto row = static_cast<std::size_t>(rounded_y);
     if (col >= frame_.depth.width || row >= frame_.depth.height) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     return Pixel{.x = col, .y = row};
   }
 
-  [[nodiscard]] std::optional<float> measured_depth(const Pixel& pixel) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<float> measured_depth(
+      const Pixel& pixel) const {
     std::uint16_t depth = frame_.depth.at(pixel.x, pixel.y);
     return depth_in_range(depth, options_.depth_scale, options_.min_depth,
                           options_.max_depth);
@@ -133,26 +137,26 @@ class IntegrationContext {
 
   // The truncated-signed-distance observation of voxel (x, y, z); nullopt
   // when the voxel is invisible, unmeasured, or behind the truncation band.
-  [[nodiscard]] std::optional<VoxelObservation> observe(
-      const VolumeView<Space>& volume, std::size_t x, std::size_t y,
-      std::size_t z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<VoxelObservation>
+  observe(const VolumeView<Space>& volume, std::size_t x, std::size_t y,
+          std::size_t z) const {
     const Vec3f camera_point = to_camera(volume.cell_center(x, y, z));
 
     const auto pixel = project_to_pixel(camera_point);
     if (!pixel) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const auto measured = measured_depth(*pixel);
     if (!measured) {
-      return std::nullopt;
+      return compat::nullopt;
     }
     const float surface_depth = *measured;
 
     const Vec3f ray = frame_.intrinsics.back_project(pixel->as_vector(), 1.0F);
     const float lambda = norm(ray);
     if (!all_finite(ray) || lambda == 0.0F) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
     const float truncation =
@@ -160,10 +164,11 @@ class IntegrationContext {
     const float signed_distance =
         projective_sdf(camera_point, lambda, surface_depth);
     if (signed_distance < -truncation) {
-      return std::nullopt;
+      return compat::nullopt;
     }
 
-    float truncated_sd = std::clamp(signed_distance / truncation, -1.0F, 1.0F);
+    float truncated_sd =
+        compat::clamp(signed_distance / truncation, -1.0F, 1.0F);
     bool integrate_color =
         signed_distance <= truncation * kColorIntegrationTruncationFraction;
 
@@ -177,9 +182,11 @@ class IntegrationContext {
   // Fuses one weighted observation into the voxel (and its colour when the
   // observation lies within the colour band). Non-positive weights are
   // dropped.
-  void fuse(const VolumeView<Space>& volume, std::size_t x, std::size_t y,
-            std::size_t z, const VoxelObservation& observation,
-            float weight) const {
+  KINECTFUSION_HOST_DEVICE void fuse(const VolumeView<Space>& volume,
+                                     std::size_t x, std::size_t y,
+                                     std::size_t z,
+                                     const VoxelObservation& observation,
+                                     float weight) const {
     if (weight <= 0.0F) {
       return;
     }
@@ -191,25 +198,25 @@ class IntegrationContext {
       return;
     }
 
-    const ColorRgba rgba = rgba_from_pixel(
+    const Vec3f color = color_from_pixel(
         frame_.color.at(observation.pixel.x, observation.pixel.y));
     ColorVoxel& color_voxel = volume.color_at(x, y, z);
-    color_voxel = color_voxel.fused(make_vec3f(rgba.x(), rgba.y(), rgba.z()),
-                                    weight, options_.max_weight);
+    color_voxel = color_voxel.fused(color, weight, options_.max_weight);
   }
 
  private:
   static constexpr float kColorIntegrationTruncationFraction = 0.5F;
 
-  [[nodiscard]] float projective_sdf(const Vec3f& camera_point, float lambda,
-                                     float surface_depth) const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float projective_sdf(
+      const Vec3f& camera_point, float lambda, float surface_depth) const {
     if (options_.projective_distance) {
       return surface_depth - (norm(camera_point) / lambda);
     }
     return surface_depth - camera_point.z;
   }
 
-  [[nodiscard]] float truncation_for(float base, float surface_depth) const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float truncation_for(
+      float base, float surface_depth) const {
     if (options_.distance_scaled_truncation) {
       return base + (options_.truncation_distance_scale * surface_depth);
     }
@@ -232,9 +239,9 @@ concept TsdfUpdateRule =
 // Constant observation weight (3.3: w = 1 suffices)
 struct ClassicTsdf {
   template <MemorySpace Space>
-  static void update(const VolumeView<Space>& volume,
-                     const IntegrationContext<Space>& context, std::size_t x,
-                     std::size_t y, std::size_t z) {
+  KINECTFUSION_HOST_DEVICE static void update(
+      const VolumeView<Space>& volume, const IntegrationContext<Space>& context,
+      std::size_t x, std::size_t y, std::size_t z) {
     const auto observation = context.observe(volume, x, y, z);
     if (!observation) {
       return;
@@ -248,9 +255,9 @@ struct ClassicTsdf {
 // available; falls back to the constant weight otherwise.
 struct AngleWeightedTsdf {
   template <MemorySpace Space>
-  static void update(const VolumeView<Space>& volume,
-                     const IntegrationContext<Space>& context, std::size_t x,
-                     std::size_t y, std::size_t z) {
+  KINECTFUSION_HOST_DEVICE static void update(
+      const VolumeView<Space>& volume, const IntegrationContext<Space>& context,
+      std::size_t x, std::size_t y, std::size_t z) {
     const auto observation = context.observe(volume, x, y, z);
     if (!observation) {
       return;
@@ -261,7 +268,7 @@ struct AngleWeightedTsdf {
 
  private:
   template <MemorySpace Space>
-  [[nodiscard]] static float observation_weight(
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE static float observation_weight(
       const IntegrationContext<Space>& context,
       const VoxelObservation& observation) {
     float weight = context.options().observation_weight;
@@ -274,7 +281,7 @@ struct AngleWeightedTsdf {
         // View direction is the (quantised) pixel ray, matching the SDF.
         const Vec3f view = -normalized(observation.ray);
         const float cos_theta =
-            std::max(0.0F, dot(normalized(normal_sample), view));
+            compat::max(0.0F, dot(normalized(normal_sample), view));
 
         weight *= cos_theta / observation.surface_depth;
       }
@@ -298,10 +305,18 @@ class TsdfIntegrator {
 
   void integrate(const HostVolumeView& volume, const DepthFrame& frame) const;
 
+  // The validated configuration; space-specific drivers launch from these.
+  [[nodiscard]] const TsdfIntegrationOptions& options() const {
+    return options_;
+  }
+  [[nodiscard]] const TsdfRuleVariant& rule() const { return rule_; }
+
+  // Throws std::invalid_argument
+  static void validate_frame(const DepthFrame& frame);
+
  private:
   [[nodiscard]] static TsdfIntegrationOptions validated(
       TsdfIntegrationOptions options);
-  static void validate_frame(const DepthFrame& frame);
 
   TsdfIntegrationOptions options_;
   TsdfRuleVariant rule_;

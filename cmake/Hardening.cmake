@@ -87,13 +87,17 @@ macro(
   message(STATUS "** Hardening Linker Flags: ${NEW_LINK_OPTIONS}")
   message(STATUS "** Hardening Compiler Defines: ${NEW_CXX_DEFINITIONS}")
 
+  # issues with setting flags for nvcc, as on remote it uses gcc by default,
+  # newer clangs aren't supported, turn off for now
+  # todo: enable later
   if(${global})
     message(STATUS "** Setting hardening options globally for all dependencies")
-    add_compile_options(${NEW_COMPILE_OPTIONS})
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${NEW_COMPILE_OPTIONS}>")
     add_compile_definitions(${NEW_CXX_DEFINITIONS})
     add_link_options(${NEW_LINK_OPTIONS})
   else()
-    target_compile_options(${target} INTERFACE ${NEW_COMPILE_OPTIONS})
+    target_compile_options(${target} INTERFACE
+                           "$<$<COMPILE_LANGUAGE:C,CXX>:${NEW_COMPILE_OPTIONS}>")
     target_link_options(${target} INTERFACE ${NEW_LINK_OPTIONS})
     target_compile_definitions(${target} INTERFACE ${NEW_CXX_DEFINITIONS})
   endif()

@@ -25,9 +25,9 @@ struct alignas(2 * sizeof(float)) Voxel {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Voxel fused(float observed,
                                                      float observation_weight,
                                                      float max_weight) const {
-    float weighted_avg =
+    const float weighted_avg =
         weighted_average(distance, weight, observed, observation_weight);
-    float truncated_weight =
+    const float truncated_weight =
         compat::min(weight + observation_weight, max_weight);
 
     return {.distance = weighted_avg, .weight = truncated_weight};
@@ -41,9 +41,9 @@ struct alignas(4 * sizeof(float)) ColorVoxel {
   // The accumulated weight saturates at max_weight. Weighted average.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE ColorVoxel fused(
       const Vec3f& observed, float observation_weight, float max_weight) const {
-    Vec3f weighted_avg =
+    const Vec3f weighted_avg =
         weighted_average(color, weight, observed, observation_weight);
-    float truncated_weight =
+    const float truncated_weight =
         compat::min(weight + observation_weight, max_weight);
 
     return {.color = weighted_avg, .weight = truncated_weight};
@@ -179,13 +179,16 @@ struct VolumeView {
     return (((z * geometry.resolution.y) + y) * geometry.resolution.x) + x;
   }
 
+  // Raw pointers so views can cross into CUDA kernels, like ImageView.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<Voxel>& voxel_at(
       std::size_t x, std::size_t y, std::size_t z) const {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return voxels[index(x, y, z)];
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<ColorVoxel>& color_at(
       std::size_t x, std::size_t y, std::size_t z) const {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return colors[index(x, y, z)];
   }
 
@@ -300,8 +303,8 @@ class BasicVolume {
   }
 
   VolumeGeometry geometry_;
-  typename SpaceTraits<Space>::template Buffer<Voxel> voxels_;
-  typename SpaceTraits<Space>::template Buffer<ColorVoxel> colors_;
+  SpaceTraits<Space>::template Buffer<Voxel> voxels_;
+  SpaceTraits<Space>::template Buffer<ColorVoxel> colors_;
 };
 
 using HostVolume = BasicVolume<MemorySpace::kHost>;

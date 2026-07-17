@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstddef>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 
 namespace kinectfusion {

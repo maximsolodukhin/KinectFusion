@@ -42,7 +42,6 @@ std::size_t DeviceVolumeReduction::observed_voxel_count(
 
   count_observed_kernel<<<grid, kBlock>>>(volume, result.data());
   cuda::check(cudaGetLastError(), "count_observed_kernel launch");
-  cuda::check(cudaDeviceSynchronize(), "count_observed_kernel");
 
   unsigned long long count = 0;
   result.copy_to_host(&count, 1);

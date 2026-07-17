@@ -48,6 +48,7 @@ struct AppOptions {
       kinectfusion::kDefaultMaxIcpUpdateRotationRadians};
   float min_icp_eigenvalue{kinectfusion::kDefaultMinIcpSystemEigenvalue};
   float max_icp_condition_number{kinectfusion::kDefaultMaxIcpConditionNumber};
+  bool icp_capture_graph{false};
   bool projective_tsdf_distance{true};
   bool distance_scaled_truncation{false};
   float truncation_distance_scale{
@@ -62,6 +63,7 @@ struct AppOptions {
       kinectfusion::kDefaultBilateralSpatialSigmaPixels};
   float bilateral_depth_sigma{kinectfusion::kDefaultBilateralDepthSigmaMeters};
   bool interactive_relocalization{false};
+  bool preload_frames{false};
   std::filesystem::path output_dir{"kinectfusion_output"};
   bool write_raycast_images{true};
   bool write_point_clouds{true};

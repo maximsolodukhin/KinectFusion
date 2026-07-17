@@ -34,6 +34,12 @@ void write_png(const ColorImage& image, const std::string& filename) {
 
   check(spng_set_option(ctx.get(), SPNG_ENCODE_TO_BUFFER, 1),
         "Failed to enable PNG encode-to-buffer");
+  check(spng_set_option(ctx.get(), SPNG_IMG_COMPRESSION_LEVEL, 1),
+        "Failed to set PNG compression level");
+  check(spng_set_option(ctx.get(), SPNG_FILTER_CHOICE, SPNG_DISABLE_FILTERING),
+        "Failed to set PNG filter choice");
+  // Saves time, but produces larger files. The default is 6, which is slower but smaller.
+  // Who cares? We're benchmarking the kinectfusion pipeline, not spng library.
 
   spng_ihdr ihdr{};
   ihdr.width = static_cast<std::uint32_t>(image.width());

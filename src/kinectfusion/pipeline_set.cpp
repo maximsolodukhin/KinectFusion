@@ -1,8 +1,15 @@
 #include <cstddef>
+#include <format>
 #include <kinectfusion/comparison.hpp>
+#include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/volume.hpp>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -45,14 +52,23 @@ PipelineSet PipelineSet::create(const PipelineSetConfig& config) {
   for (const PipelineConfig& pipeline : config.pipelines) {
     Pipeline::Creation creation = Pipeline::create(pipeline);
 
+    // A multi-member set exists to measure its members against each other, so
+    // a member that quietly ran somewhere other than requested would report a
+    // difference it never measured. Only a lone pipeline may fall back.
+    if (creation.space != pipeline.space && config.pipelines.size() > 1) {
+      throw std::invalid_argument(std::format(
+          "Pipeline '{}' cannot run as configured: {}. A set compares its "
+          "members against each other, so it will not substitute one.",
+          pipeline.name, creation.fallback_reason));
+    }
     members.emplace_back(std::move(creation.pipeline),
-                         std::move(creation.fallback_reason));
+                         std::move(creation.fallback_reason), creation.space);
   }
   return {std::move(members), reference_index, config.compare_every_n_frames};
 }
 
-void PipelineSet::integrate(const DepthFrame& frame) {
-  DeviceFrameCache shared_upload;
+void PipelineSet::integrate(const DepthFrame& frame,
+                            const DeviceDepthFrame* shared_upload) {
   for (const Member& member : members_) {
     member.pipeline->integrate(frame, shared_upload);
   }
@@ -63,7 +79,7 @@ SurfaceMaps PipelineSet::raycast_reference(const RaycastCamera& camera) {
 }
 
 TrackingSurfacesVariant PipelineSet::tracking_surfaces(
-    const RaycastCamera& camera, const ConstHostVertexNormalMapsView& live) {
+    const RaycastCamera& camera, const LiveViewsVariant& live) {
   return members_.at(reference_index_)
       .pipeline->tracking_surfaces(camera, live);
 }

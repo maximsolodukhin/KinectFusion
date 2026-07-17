@@ -1,6 +1,7 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_DEVICE_IMAGE_CUH
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_DEVICE_IMAGE_CUH
 
+#include <concepts>
 #include <cstddef>
 #include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/image_proc/image.hpp>
@@ -30,15 +31,39 @@ class Image<PixelT, MemorySpace::kDevice> {
         height_(height),
         buffer_(checked_pixel_count(width, height)) {}
 
+  // Uninitialized allocation for images whose every pixel is written next
+  // (kernel outputs, uploads, clones).
+  [[nodiscard]] static Image uninitialized(std::size_t width,
+                                           std::size_t height) {
+    Image image;
+    image.width_ = width;
+    image.height_ = height;
+    image.buffer_ =
+        DevicePixelBuf::uninitialized(checked_pixel_count(width, height));
+    return image;
+  }
+
   // Host to device into fresh image, no zero initialization.
   [[nodiscard]] static Image uploaded(HostImageView<const PixelT> source) {
-    Image image;
-    image.width_ = source.width;
-    image.height_ = source.height;
-    image.buffer_ = DevicePixelBuf::uninitialized(
-        checked_pixel_count(source.width, source.height));
+    Image image = uninitialized(source.width, source.height);
     image.buffer_.copy_from_host(source.data, image.buffer_.size());
     return image;
+  }
+
+  // Device to device into fresh image, no zero initialization.
+  [[nodiscard]] static Image cloned(DeviceImageView<const PixelT> source) {
+    Image image = uninitialized(source.width, source.height);
+    image.buffer_.copy_from_device(source.data, image.buffer_.size());
+    return image;
+  }
+
+  // Keeps the allocation dimensions match for per-frame reuse.
+  // pixel contents are unspecified afterwards.
+  void ensure_extent(std::size_t width, std::size_t height) {
+    if (width == width_ && height == height_) {
+      return;
+    }
+    *this = uninitialized(width, height);
   }
 
   ~Image() = default;
@@ -119,10 +144,29 @@ void swap(Image<PixelT, MemorySpace::kDevice>& lhs,
   lhs.swap(rhs);
 }
 
+// The device Image specialization, whatever pixel type it holds.
+template <typename I>
+concept AnyDeviceImage =
+    std::same_as<I, Image<typename I::value_type, MemorySpace::kDevice>>;
+
+// A device image paired with a view its copy_from accepts: same pixel type,
+// either memory space.
+template <typename I, typename V>
+concept RefillableFrom =
+    AnyDeviceImage<I> && ImageViewOf<V, typename I::value_type>;
+
 using DeviceDepthImage = DepthImageFor<MemorySpace::kDevice>;
 using DeviceColorImage = ColorImageFor<MemorySpace::kDevice>;
 using DeviceVector3fImage = Vector3fImageFor<MemorySpace::kDevice>;
 
 }  // namespace kinectfusion::image_proc
+
+namespace kinectfusion {
+
+using DeviceDepthImg = image_proc::DeviceDepthImage;
+using DeviceColorImg = image_proc::DeviceColorImage;
+using DeviceVec3fImg = image_proc::DeviceVector3fImage;
+
+}  // namespace kinectfusion
 
 #endif /* KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_DEVICE_IMAGE_CUH */

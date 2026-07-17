@@ -55,6 +55,18 @@ target_link_libraries(
 
 kinectfusion_configure_linker(tests)
 
+# Compile-only canary keeping the kernel-reachable headers C++20-compatible
+# (nvcc's ceiling at 13.1 driver on lxhalle). 
+# Cannot link kinectfusion targets: they force cxx_std_23.
+add_library(cxx20_shared_headers OBJECT cxx20_shared_headers.cpp)
+target_include_directories(cxx20_shared_headers PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_link_libraries(cxx20_shared_headers PRIVATE Eigen3::Eigen
+                                                   kinectfusion::kinectfusion_warnings)
+set_target_properties(cxx20_shared_headers PROPERTIES CXX_STANDARD 20
+                                                      CXX_STANDARD_REQUIRED ON
+                                                      CXX_EXTENSIONS OFF)
+add_dependencies(tests cxx20_shared_headers)
+
 if(KINECTFUSION_HAS_CUDA)
   add_library(cuda_type_assertions OBJECT cuda_type_assertions.cu)
   target_link_libraries(

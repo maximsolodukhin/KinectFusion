@@ -28,12 +28,6 @@ struct PipelineConfig {
 using TrackingSurfacesVariant =
     std::variant<HostTrackingSurfaces, DeviceTrackingSurfaces>;
 
-// One frame's device upload, shared across the device pipelines of a set:
-// populated by the first one, reused by the rest, ignored by host pipelines,
-// stays valid as it's immutable.
-class DeviceDepthFrame;
-using DeviceFrameCache = std::shared_ptr<const DeviceDepthFrame>;
-
 class Pipeline {
  public:
   Pipeline(const Pipeline&) = delete;
@@ -45,8 +39,11 @@ class Pipeline {
   // Fuses one tracked depth frame into the pipeline's volume
   virtual void integrate(const DepthFrame& frame) = 0;
 
+  // `shared_upload` is the set-wide device upload slot for this frame: the
+  // first device pipeline publishes it, later ones reuse it, host pipelines
+  // ignore it.
   virtual void integrate(const DepthFrame& frame,
-                         DeviceFrameCache& shared_upload) {
+                         const DeviceDepthFrame*& shared_upload) {
     static_cast<void>(shared_upload);
     integrate(frame);
   }
@@ -55,8 +52,7 @@ class Pipeline {
 
   // Views stay valid until the next tracking_surfaces or raycast call.
   [[nodiscard]] virtual TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera,
-      const ConstHostVertexNormalMapsView& live) = 0;
+      const RaycastCamera& camera, const LiveViewsVariant& live) = 0;
 
   [[nodiscard]] virtual std::size_t observed_voxel_count() const = 0;
 
@@ -68,8 +64,9 @@ class Pipeline {
 
   struct Creation {
     std::unique_ptr<Pipeline> pipeline;
-    // Non-empty when the requested space was unavailable and the pipeline
-    // fell back to host execution.
+    // Where the pipeline actually runs; below the requested space exactly
+    // when fallback_reason is set.
+    MemorySpace space{MemorySpace::kHost};
     std::string fallback_reason;
   };
 

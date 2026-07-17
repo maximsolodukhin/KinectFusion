@@ -2,17 +2,23 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <toml++/toml.hpp>
+// Provides the whole toml:: namespace; include-cleaner cannot map it.
+#include <toml++/toml.hpp>  // NOLINT(misc-include-cleaner)
+#include <type_traits>
 #include <variant>
 
+// toml++ is a single header; include-cleaner cannot map toml:: symbols to it.
+// NOLINTBEGIN(misc-include-cleaner)
 namespace app {
 namespace {
 
@@ -72,8 +78,7 @@ template <typename T>
   }
   require(!config.name.empty(), "Every [[pipeline]] requires a name");
   // Names label CSV columns and output subdirectories.
-  require(config.name.find(',') == std::string::npos,
-          "Pipeline names must not contain commas");
+  require(!config.name.contains(','), "Pipeline names must not contain commas");
   return config;
 }
 
@@ -175,3 +180,4 @@ kinectfusion::PipelineSetConfig parse_pipeline_set(
 }
 
 }  // namespace app
+// NOLINTEND(misc-include-cleaner)

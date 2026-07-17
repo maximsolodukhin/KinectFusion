@@ -11,10 +11,7 @@
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <string_view>
-
-#ifdef KINECTFUSION_ENABLE_LOGGING
 #include <utility>
-#endif
 
 // Formatters so ICP tracking results log as single arguments instead of
 // being enumerated field-by-field at every call site
@@ -144,23 +141,45 @@ struct std::formatter<kinectfusion::PipelineComparison>
 
 namespace app {
 
-// Messages are rendered with std::format
-template <typename... Args>
-void log_info([[maybe_unused]] std::format_string<Args...> fmt,
+// Messages are rendered with std::format. Call through the log_info /
+// log_warn macros: with logging compiled out they must not evaluate their
+// arguments (an argument may be a device reduction), so the macros wrap
+// the call in a never-taken branch that only type-checks it.
+
+/*
+ log_info("Frame {} integrated: {} observed_voxels={}",
+           sensor_.current_frame_index(), tracking.diagnostics,
+           pipelines_.reference().observed_voxel_count());
+  
+  was evaluated as 
+  void log_info([[maybe_unused]] std::format_string<Args...> fmt,
               [[maybe_unused]] Args&&... args) {
-#ifdef KINECTFUSION_ENABLE_LOGGING
+     ... logging disabled so nothing in the function ...
+  }
+  which is a no-op BUT EVALUATED ARGUMENTS!
+*/
+template <typename... Args>
+void log_info_eval(std::format_string<Args...> fmt, Args&&... args) {
   spdlog::info("{}", std::format(fmt, std::forward<Args>(args)...));
-#endif
 }
 
 template <typename... Args>
-void log_warn([[maybe_unused]] std::format_string<Args...> fmt,
-              [[maybe_unused]] Args&&... args) {
-#ifdef KINECTFUSION_ENABLE_LOGGING
+void log_warn_eval(std::format_string<Args...> fmt, Args&&... args) {
   spdlog::warn("{}", std::format(fmt, std::forward<Args>(args)...));
-#endif
 }
 
 }  // namespace app
+
+// NOLINTBEGIN(cppcoreguidelines-macro-usage)
+#ifdef KINECTFUSION_ENABLE_LOGGING
+#define log_info(...) ::app::log_info_eval(__VA_ARGS__)
+#define log_warn(...) ::app::log_warn_eval(__VA_ARGS__)
+#else
+#define log_info(...) \
+  (false ? ::app::log_info_eval(__VA_ARGS__) : static_cast<void>(0))
+#define log_warn(...) \
+  (false ? ::app::log_warn_eval(__VA_ARGS__) : static_cast<void>(0))
+#endif
+// NOLINTEND(cppcoreguidelines-macro-usage)
 
 #endif /* KINECTFUSION_SRC_APP_LOGGING_HPP */

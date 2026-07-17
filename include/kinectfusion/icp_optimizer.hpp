@@ -27,6 +27,10 @@ enum class IcpFailure : std::uint8_t {
   kUpdateTooLarge,
 };
 
+// Which CUDA-graph construction the device correspondence sweep uses. An
+// ablation axis only: both build the same graph and produce the same result.
+enum class IcpGraphBuild : std::uint8_t { kExplicit, kCaptured };
+
 struct Converged {
   float update_translation{};
   float update_rotation{};
@@ -85,6 +89,7 @@ struct ProjectiveIcpOptions {
   float max_update_rotation{kDefaultMaxIcpUpdateRotationRadians};
   float min_system_eigenvalue{kDefaultMinIcpSystemEigenvalue};
   float max_condition_number{kDefaultMaxIcpConditionNumber};
+  IcpGraphBuild device_graph_build{IcpGraphBuild::kExplicit};
 };
 
 // Gauss-Newton driver: a per-iteration correspondence sweep in the request's
@@ -93,7 +98,8 @@ struct ProjectiveIcpOptions {
 class ProjectiveIcpTracker {
  public:
   explicit ProjectiveIcpTracker(ProjectiveIcpOptions options = {})
-      : options_(options) {}
+      : options_(options),
+        device_sweep_(make_device_sweep(options.device_graph_build)) {}
 
   [[nodiscard]] IcpOutcome estimate_pose(const TrackingRequest& request) const;
   // Throws std::logic_error when built without CUDA support.
@@ -153,7 +159,20 @@ class ProjectiveIcpTracker {
   [[nodiscard]] Increment solve_increment(
       const IcpNormalEquations& equations) const;
 
+  // Either graph-build variant of the device sweep, chosen by options.
+  using DeviceSweep =
+      std::variant<DeviceCorrespondenceSweep, CapturedCorrespondenceSweep>;
+
+  [[nodiscard]] static DeviceSweep make_device_sweep(IcpGraphBuild build) {
+    if (build == IcpGraphBuild::kCaptured) {
+      return DeviceSweep{std::in_place_type<CapturedCorrespondenceSweep>};
+    }
+    return DeviceSweep{std::in_place_type<DeviceCorrespondenceSweep>};
+  }
+
   ProjectiveIcpOptions options_;
+  // Reduction scratch aka cache
+  mutable DeviceSweep device_sweep_;
 };
 
 }  // namespace kinectfusion

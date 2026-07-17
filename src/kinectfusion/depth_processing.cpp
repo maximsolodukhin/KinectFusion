@@ -1,27 +1,78 @@
 #include <Eigen/Core>
-#include <Eigen/Geometry>
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/grid.hpp>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
-#include <limits>
-#include <optional>
+#include <memory>
 #include <utility>
-#include <vector>
 
 namespace kinectfusion {
 namespace {
 
-// Linear resolution reduction per pyramid level: each level halves width and
-// height, downsampling over a kDownsampleFactor x kDownsampleFactor block.
-constexpr std::size_t kDownsampleFactor = 2U;
+// every worker exposes operator()(col, row) -> optional value, with `fallback`
+// filling the rest.
+template <typename Worker, typename PixelT>
+void fill_pixels(const Worker& worker, image_proc::HostImageView<PixelT> output,
+                 PixelT fallback) {
+  for (const auto [col, row] : PixelIndices{output.width, output.height}) {
+    output.at(col, row) = worker(col, row).value_or(fallback);
+  }
+}
 
-[[nodiscard]] DepthProcessingOptions validated(DepthProcessingOptions options) {
+class HostPyramidSource final : public PyramidSource {
+ public:
+  explicit HostPyramidSource(const DepthProcessingOptions& options)
+      : processor_(options) {}
+
+  std::size_t build(const image_proc::DepthImage& raw_depth,
+                    const CameraIntrinsics& intrinsics) override {
+    pyramid_ = processor_.build_surface_pyramid(raw_depth, intrinsics);
+    return pyramid_.size();
+  }
+
+  [[nodiscard]] PyramidLevel level(std::size_t index) const override {
+    const auto& source = pyramid_.at(index);
+    return {.surface = view(source.surface), .intrinsics = source.intrinsics};
+  }
+
+  [[nodiscard]] const image_proc::Vector3fImage* host_normals() const override {
+    return pyramid_.empty() ? nullptr : &pyramid_.front().surface.normals;
+  }
+
+  [[nodiscard]] const DeviceDepthFrame* device_frame(
+      const DepthFrame& /*frame*/) override {
+    return nullptr;
+  }
+
+ private:
+  DepthProcessor<MemorySpace::kHost> processor_;
+  SurfacePyramid pyramid_;
+};
+
+}  // namespace
+
+PyramidSource::Creation PyramidSource::create(
+    MemorySpace space, const DepthProcessingOptions& options) {
+  if (space == MemorySpace::kDevice) {
+#ifdef KINECTFUSION_HAS_CUDA
+    return {.source = create_device(options), .fallback_reason = {}};
+#else
+    return {.source = std::make_unique<HostPyramidSource>(options),
+            .fallback_reason =
+                "device memory space unavailable; processing depth on host"};
+#endif
+  }
+  return {.source = std::make_unique<HostPyramidSource>(options),
+          .fallback_reason = {}};
+}
+
+DepthProcessingOptions DepthProcessingOptions::validated(
+    DepthProcessingOptions options) {
   require(options.levels > 0U, "Depth pyramid must have at least one level");
   require(options.depth_scale > 0.0F, "Depth scale must be positive");
   require(options.min_depth >= 0.0F && options.max_depth > options.min_depth,
@@ -39,24 +90,9 @@ constexpr std::size_t kDownsampleFactor = 2U;
   return options;
 }
 
-// Exponent scale of a Gaussian falloff: exp(-d^2 / (2 sigma^2)).
-[[nodiscard]] constexpr float gaussian_exponent_scale(float sigma) {
-  return -0.5F / (sigma * sigma);
-}
-
-}  // namespace
-
 DepthProcessor<MemorySpace::kHost>::DepthProcessor(
     DepthProcessingOptions options)
-    : options_(validated(options)),
-      spatial_scale_(gaussian_exponent_scale(options_.bilateral_spatial_sigma)),
-      range_scale_(gaussian_exponent_scale(options_.bilateral_depth_sigma)) {}
-
-std::optional<float> DepthProcessor<MemorySpace::kHost>::usable_depth(
-    std::uint16_t raw) const {
-  return depth_in_range(raw, options_.depth_scale, options_.min_depth,
-                        options_.max_depth);
-}
+    : options_(DepthProcessingOptions::validated(options)) {}
 
 auto DepthProcessor<MemorySpace::kHost>::bilateral_filter(
     const DepthImg& depth_image) const -> DepthImg {
@@ -65,181 +101,38 @@ auto DepthProcessor<MemorySpace::kHost>::bilateral_filter(
   }
 
   DepthImg filtered{depth_image.width(), depth_image.height()};
-  for (std::size_t row = 0; row < depth_image.height(); ++row) {
-    for (std::size_t col = 0; col < depth_image.width(); ++col) {
-      const auto center_meters = usable_depth(depth_image.at(col, row));
-      if (!center_meters) {
-        continue;
-      }
-      if (const auto value =
-              bilateral_filtered_pixel(depth_image, static_cast<int>(col),
-                                       static_cast<int>(row), *center_meters)) {
-        filtered.at(col, row) = *value;
-      }
-    }
-  }
+  fill_pixels(HostBilateralFilter{depth_image.view(), options_},
+              filtered.view(), std::uint16_t{0});
   return filtered;
-}
-
-std::optional<std::uint16_t>
-DepthProcessor<MemorySpace::kHost>::bilateral_filtered_pixel(
-    const DepthImg& depth_image, int col, int row, float center_meters) const {
-  const int width = static_cast<int>(depth_image.width());
-  const int height = static_cast<int>(depth_image.height());
-  const int radius = options_.bilateral_radius;
-
-  const int x_begin = std::max(col - radius, 0);
-  const int y_begin = std::max(row - radius, 0);
-
-  const int x_end = std::min(col + radius, width - 1);
-  const int y_end = std::min(row + radius, height - 1);
-
-  float weighted_sum = 0.0F;
-  float weight_sum = 0.0F;
-
-  for (int y = y_begin; y <= y_end; ++y) {
-    for (int x = x_begin; x <= x_end; ++x) {
-      const auto raw = depth_image.at(static_cast<std::size_t>(x),
-                                      static_cast<std::size_t>(y));
-      const auto sample_meters = usable_depth(raw);
-      if (!sample_meters) {
-        continue;
-      }
-      const auto pixel_distance2 =
-          static_cast<float>(((x - col) * (x - col)) + ((y - row) * (y - row)));
-      const float depth_difference = *sample_meters - center_meters;
-      const float weight =
-          std::exp((pixel_distance2 * spatial_scale_) +
-                   (depth_difference * depth_difference * range_scale_));
-      weighted_sum += weight * static_cast<float>(raw);
-      weight_sum += weight;
-    }
-  }
-  if (weight_sum <= 0.0F) {
-    return std::nullopt;
-  }
-  return static_cast<std::uint16_t>(std::lround(weighted_sum / weight_sum));
 }
 
 auto DepthProcessor<MemorySpace::kHost>::downsample(
     const DepthImg& depth_image) const -> DepthImg {
   const std::size_t width = depth_image.width() / kDownsampleFactor;
   const std::size_t height = depth_image.height() / kDownsampleFactor;
+
   DepthImg downsampled{width, height};
-
-  for (std::size_t row = 0; row < height; ++row) {
-    for (std::size_t col = 0; col < width; ++col) {
-      if (const auto value = downsampled_block(depth_image, col, row)) {
-        downsampled.at(col, row) = *value;
-      }
-    }
-  }
+  fill_pixels(HostBlockDownsample{depth_image.view(), options_},
+              downsampled.view(), std::uint16_t{0});
   return downsampled;
-}
-
-std::optional<std::uint16_t>
-DepthProcessor<MemorySpace::kHost>::downsampled_block(
-    const DepthImg& depth_image, std::size_t col, std::size_t row) const {
-  std::uint32_t sum = 0;
-  std::uint32_t count = 0;
-  std::uint16_t minimum_observed_depth =
-      std::numeric_limits<std::uint16_t>::max();
-  std::uint16_t maximum_observed_depth = 0;
-
-  for (std::size_t dy = 0; dy < kDownsampleFactor; ++dy) {
-    for (std::size_t dx = 0; dx < kDownsampleFactor; ++dx) {
-      const std::uint16_t sample = depth_image.at(
-          (col * kDownsampleFactor) + dx, (row * kDownsampleFactor) + dy);
-      if (sample == 0) {
-        continue;
-      }
-      sum += sample;
-      ++count;
-      minimum_observed_depth = std::min(minimum_observed_depth, sample);
-      maximum_observed_depth = std::max(maximum_observed_depth, sample);
-    }
-  }
-
-  if (count == 0) {
-    return std::nullopt;
-  }
-
-  float max_depth =
-      depth_to_meters(maximum_observed_depth, options_.depth_scale);
-  float min_depth =
-      depth_to_meters(minimum_observed_depth, options_.depth_scale);
-
-  if (max_depth - min_depth > options_.max_downsample_depth_jump) {
-    return std::nullopt;
-  }
-
-  return static_cast<std::uint16_t>((sum + (count / 2U)) / count);
 }
 
 auto DepthProcessor<MemorySpace::kHost>::project_to_vertices(
     const DepthImg& depth_image, const CameraIntrinsics& intrinsics,
     const Eigen::Matrix4f& camera_pose) const -> Vec3fImg {
-  Vec3fImg vertices{depth_image.width(), depth_image.height(), invalid_vec3f()};
-
-  for (std::size_t row = 0; row < depth_image.height(); ++row) {
-    for (std::size_t col = 0; col < depth_image.width(); ++col) {
-      const auto depth = usable_depth(depth_image.at(col, row));
-      if (!depth) {
-        continue;
-      }
-      const Eigen::Vector3f camera_point = intrinsics.back_project(
-          Eigen::Vector2f{static_cast<float>(col), static_cast<float>(row)},
-          *depth);
-      // .homogeneous() makes the camera_point (x,y,z,1) to multiply with the
-      // camera pose
-      const Eigen::Vector3f world_point =
-          (camera_pose * camera_point.homogeneous()).head<3>();
-      vertices.at(col, row) = from_eigen(world_point);
-    }
-  }
+  Vec3fImg vertices{depth_image.width(), depth_image.height()};
+  fill_pixels(HostVertexProjection{depth_image.view(), intrinsics,
+                                   from_eigen(camera_pose), options_},
+              vertices.view(), invalid_vec3f());
   return vertices;
 }
 
 auto DepthProcessor<MemorySpace::kHost>::compute_normals(
     const Vec3fImg& vertices) const -> Vec3fImg {
-  Vec3fImg normals{vertices.width(), vertices.height(), invalid_vec3f()};
-  if (vertices.width() < 3U || vertices.height() < 3U) {
-    return normals;
-  }
-  // Interior pixels only: the stencil needs all four neighbours.
-  for (std::size_t row = 1; row + 1 < vertices.height(); ++row) {
-    for (std::size_t col = 1; col + 1 < vertices.width(); ++col) {
-      if (const auto normal = stencil_normal(vertices, col, row)) {
-        normals.at(col, row) = *normal;
-      }
-    }
-  }
+  Vec3fImg normals{vertices.width(), vertices.height()};
+  fill_pixels(HostNormalEstimation{vertices.view(), options_}, normals.view(),
+              invalid_vec3f());
   return normals;
-}
-
-std::optional<Vec3f> DepthProcessor<MemorySpace::kHost>::stencil_normal(
-    const Vec3fImg& vertices, std::size_t col, std::size_t row) const {
-  const Vec3f& left = vertices.at(col - 1, row);
-  const Vec3f& right = vertices.at(col + 1, row);
-
-  const Vec3f& top = vertices.at(col, row - 1);
-  const Vec3f& bottom = vertices.at(col, row + 1);
-
-  // NaN propagates through the sum
-  if (!all_finite(vertices.at(col, row) + left + right + top + bottom)) {
-    return std::nullopt;
-  }
-  if (std::abs(right.z - left.z) > options_.max_normal_depth_jump ||
-      std::abs(bottom.z - top.z) > options_.max_normal_depth_jump) {
-    return std::nullopt;
-  }
-  const Vec3f normal = cross(bottom - top, right - left);
-  const float length = norm(normal);
-
-  if (length <= 0.0F) {
-    return std::nullopt;
-  }
-  return normal / length;
 }
 
 SurfacePyramid DepthProcessor<MemorySpace::kHost>::build_surface_pyramid(

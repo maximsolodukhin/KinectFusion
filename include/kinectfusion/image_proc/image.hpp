@@ -1,6 +1,7 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 #define KINECTFUSION_INCLUDE_KINECTFUSION_IMAGE_PROC_IMAGE_HPP
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/vector.hpp>
@@ -51,6 +52,12 @@ using HostImageView = ImageView<PixelT, MemorySpace::kHost>;
 
 template <typename PixelT>
 using DeviceImageView = ImageView<PixelT, MemorySpace::kDevice>;
+
+// Readable as a view of PixelT pixels in either memory space; mutable views
+// qualify through their read-only conversion.
+template <typename V, typename PixelT>
+concept ImageViewOf = std::convertible_to<V, HostImageView<const PixelT>> ||
+                      std::convertible_to<V, DeviceImageView<const PixelT>>;
 
 template <typename PixelT, MemorySpace Space = MemorySpace::kHost>
 class Image;

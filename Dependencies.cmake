@@ -49,6 +49,7 @@ function(kinectfusion_setup_ceres)
       "BUILD_TESTING OFF"
       "BUILD_EXAMPLES OFF"
       "BUILD_BENCHMARKS OFF"
+      "SUITESPARSE OFF"
       # Ceres must not enable_language(CUDA) behind our back: its compiler
       # detection grabs whatever nvcc it finds (system CUDA 12 vs the real
       # toolkit) and we don't use its CUDA solvers anyway.

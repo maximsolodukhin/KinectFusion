@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 
 namespace kinectfusion {
 namespace {
@@ -28,16 +29,16 @@ class DevicePipeline final : public Pipeline {
         raycaster_(config.raycast) {}
 
   void integrate(const DepthFrame& frame) override {
-    DeviceFrameCache own_upload;
+    const DeviceDepthFrame* own_upload = nullptr;
     integrate(frame, own_upload);
   }
 
   void integrate(const DepthFrame& frame,
-                 DeviceFrameCache& shared_upload) override {
+                 const DeviceDepthFrame*& shared_upload) override {
     TsdfIntegrator::validate_frame(frame);
-    if (!shared_upload) {
-      shared_upload = std::make_shared<const DeviceDepthFrame>(
-          DeviceDepthFrame::upload(frame));
+    if (shared_upload == nullptr) {
+      fallback_upload_.assign(frame);
+      shared_upload = &fallback_upload_;
     }
     const DeviceIntegrationContext context{shared_upload->view(),
                                            integrator_.options()};
@@ -52,13 +53,11 @@ class DevicePipeline final : public Pipeline {
   }
 
   [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera,
-      const ConstHostVertexNormalMapsView& live) override {
+      const RaycastCamera& camera, const LiveViewsVariant& live) override {
     Raycaster::validate_camera(camera);
     DeviceSurfaceMaps& model = surface_maps_for(camera.width, camera.height);
     DeviceRaycastSweep::run(device_raycast(camera), model.view());
-    return DeviceTrackingSurfaces::from_render(view(staged_live(live)),
-                                               model.view());
+    return DeviceTrackingSurfaces::from_render(device_live(live), model.view());
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
@@ -75,6 +74,16 @@ class DevicePipeline final : public Pipeline {
  private:
   using MapExtent = std::pair<std::size_t, std::size_t>;
 
+  // Device-built pyramids hand over device views directly; host pyramids are
+  // staged through the per-extent upload cache.
+  [[nodiscard]] ConstDeviceSurfaceView device_live(
+      const LiveViewsVariant& live) {
+    if (const auto* device = std::get_if<ConstDeviceSurfaceView>(&live)) {
+      return *device;
+    }
+    return view(staged_live(std::get<ConstHostSurfaceView>(live)));
+  }
+
   [[nodiscard]] DeviceSurfaceRaycast device_raycast(
       const RaycastCamera& camera) const {
     return DeviceSurfaceRaycast::from_camera(volume_.view(),
@@ -87,12 +96,11 @@ class DevicePipeline final : public Pipeline {
         .first->second;
   }
 
-  [[nodiscard]] const DeviceVertexNormalMaps& staged_live(
-      const ConstHostVertexNormalMapsView& live) {
-    using DeviceVec3fImg = image_proc::DeviceVector3fImage;
+  [[nodiscard]] const DeviceSurface& staged_live(
+      const ConstHostSurfaceView& live) {
     const auto [entry, inserted] = live_maps_.try_emplace(
         MapExtent{live.vertices.width, live.vertices.height});
-    DeviceVertexNormalMaps& staged = entry->second;
+    DeviceSurface& staged = entry->second;
     if (inserted) {
       staged.vertices = DeviceVec3fImg::uploaded(live.vertices);
       staged.normals = DeviceVec3fImg::uploaded(live.normals);
@@ -106,8 +114,10 @@ class DevicePipeline final : public Pipeline {
   DeviceVolume volume_;
   TsdfIntegrator integrator_;
   Raycaster raycaster_;
+  // Own upload for integrate calls no pyramid or earlier pipeline seeded.
+  DeviceDepthFrame fallback_upload_;
   std::map<MapExtent, DeviceSurfaceMaps> surface_maps_;
-  std::map<MapExtent, DeviceVertexNormalMaps> live_maps_;
+  std::map<MapExtent, DeviceSurface> live_maps_;
 };
 
 }  // namespace

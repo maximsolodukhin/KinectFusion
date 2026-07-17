@@ -45,7 +45,7 @@ int main(int argc, const char** argv) {
 
     app::validate_options(app_options);
 
-    app::log_info(
+    log_info(
         "Starting KinectFusion: dataset={} max_frames={} volume={}^3 "
         "voxel_size={} truncation_distance={}",
         app_options.dataset_dir.string(), app_options.max_frames,

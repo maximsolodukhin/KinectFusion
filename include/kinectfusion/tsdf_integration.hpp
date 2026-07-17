@@ -67,6 +67,10 @@ struct DepthFrame {
   }
 };
 
+// One frame's device upload, shared across the device pipelines of a set as
+// a borrowed pointer. Check CUDA backend.
+class DeviceDepthFrame;
+
 struct VoxelObservation {
   Pixel pixel{};
   float surface_depth{};
@@ -160,9 +164,9 @@ class IntegrationContext {
       return compat::nullopt;
     }
 
-    float truncated_sd =
+    const float truncated_sd =
         compat::clamp(signed_distance / truncation, -1.0F, 1.0F);
-    bool integrate_color =
+    const bool integrate_color =
         signed_distance <= truncation * kColorIntegrationTruncationFraction;
 
     return VoxelObservation{.pixel = *pixel,

@@ -1,14 +1,18 @@
 #include <cstddef>
+#include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>  // NOLINT(misc-include-cleaner)
 
 namespace kinectfusion {
 namespace {
@@ -32,10 +36,10 @@ class HostPipeline final : public Pipeline {
   }
 
   [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera,
-      const ConstHostVertexNormalMapsView& live) override {
+      const RaycastCamera& camera, const LiveViewsVariant& live) override {
     tracking_model_ = raycaster_.raycast(volume_.view(), camera);
-    return HostTrackingSurfaces::from_render(live, view(tracking_model_));
+    return HostTrackingSurfaces::from_render(
+        std::get<ConstHostSurfaceView>(live), view(tracking_model_));
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
@@ -72,13 +76,17 @@ Pipeline::Creation Pipeline::create(const PipelineConfig& config) {
 
   if (config.space == MemorySpace::kDevice) {
     if (device_available()) {
-      return Creation{.pipeline = create_device(config), .fallback_reason = {}};
+      return Creation{.pipeline = create_device(config),
+                      .space = MemorySpace::kDevice,
+                      .fallback_reason = {}};
     }
     return Creation{
         .pipeline = std::make_unique<HostPipeline>(config),
+        .space = MemorySpace::kHost,
         .fallback_reason = "device memory space unavailable; running on host"};
   }
   return Creation{.pipeline = std::make_unique<HostPipeline>(config),
+                  .space = MemorySpace::kHost,
                   .fallback_reason = {}};
 }
 

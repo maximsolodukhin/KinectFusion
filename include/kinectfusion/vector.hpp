@@ -163,6 +163,13 @@ struct Mat3f {
 struct RigidTransform {
   Mat3f rotation{};
   Vec3f translation{};
+
+  [[nodiscard]] static constexpr RigidTransform identity() {
+    return {.rotation = {.row_x = make_vec3f(1, 0, 0),
+                         .row_y = make_vec3f(0, 1, 0),
+                         .row_z = make_vec3f(0, 0, 1)},
+            .translation = {}};
+  }
 };
 
 [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr Vec3f operator*(

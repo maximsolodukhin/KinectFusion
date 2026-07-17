@@ -1,0 +1,11 @@
+---
+# Test-only relaxations:
+# cognitive-complexity: Catch2's REQUIRE/SECTION macros inflate the metric.
+# magic-numbers: fixtures are inherently literal values.
+# unchecked-optional-access: REQUIRE(x.has_value()) is invisible to the check.
+InheritParentConfig: true
+Checks: "-readability-function-cognitive-complexity,
+        -cppcoreguidelines-avoid-magic-numbers,
+        -readability-magic-numbers,
+        -bugprone-unchecked-optional-access
+"

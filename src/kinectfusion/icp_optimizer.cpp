@@ -11,6 +11,7 @@
 #include <kinectfusion/vector.hpp>
 #include <optional>
 #include <stdexcept>
+#include <variant>
 
 namespace kinectfusion {
 namespace {
@@ -23,9 +24,9 @@ constexpr float kMinimumRotationAngle = 1.0e-12F;
 // the raycaster), so a size mismatch is a caller error rather than a
 // tracking failure. The expected channel makes it impossible to ignore.
 template <MemorySpace Space>
-[[nodiscard]] bool sizes_match(const ConstVertexNormalMapsView<Space>& maps) {
-  return maps.vertices.width == maps.normals.width &&
-         maps.vertices.height == maps.normals.height;
+[[nodiscard]] bool sizes_match(const ConstSurfaceView<Space>& surface) {
+  return surface.vertices.width == surface.normals.width &&
+         surface.vertices.height == surface.normals.height;
 }
 
 template <MemorySpace Space>
@@ -52,29 +53,60 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
   });
 }
 
-// Instance-shaped for API symmetry even when the CUDA-less body ignores state.
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 IcpOutcome ProjectiveIcpTracker::estimate_pose(
     const DeviceTrackingRequest& request) const {
-#ifdef KINECTFUSION_HAS_CUDA
   if (const auto rejected = rejected_input(request)) {
     return *rejected;
   }
   return estimate_with(request, [&](const IcpIterationTransforms& transforms) {
-    return DeviceCorrespondenceSweep::run(DeviceCorrespondenceSearch{
-        request.surfaces, request.model_intrinsics, transforms, gates()});
+    return std::visit(
+        [&](auto& sweep) {
+          return sweep.run(DeviceCorrespondenceSearch{
+              request.surfaces, request.model_intrinsics, transforms, gates()});
+        },
+        device_sweep_);
   });
-#else
-  static_cast<void>(request);
-  throw std::logic_error("KinectFusion was built without CUDA support");
-#endif
 }
+
+#ifndef KINECTFUSION_HAS_CUDA
+
+template <typename Build>
+struct BasicDeviceCorrespondenceSweep<Build>::Scratch {};
+
+template <typename Build>
+BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep() =
+    default;
+template <typename Build>
+BasicDeviceCorrespondenceSweep<Build>::~BasicDeviceCorrespondenceSweep() =
+    default;
+template <typename Build>
+BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep(
+    BasicDeviceCorrespondenceSweep&&) noexcept = default;
+template <typename Build>
+BasicDeviceCorrespondenceSweep<Build>&
+BasicDeviceCorrespondenceSweep<Build>::operator=(
+    BasicDeviceCorrespondenceSweep&&) noexcept = default;
+
+template <typename Build>
+IcpNormalEquations BasicDeviceCorrespondenceSweep<Build>::run(
+    const DeviceCorrespondenceSearch& /*search*/) {
+  throw std::logic_error("KinectFusion was built without CUDA support");
+}
+
+template class BasicDeviceCorrespondenceSweep<ExplicitGraphBuild>;
+template class BasicDeviceCorrespondenceSweep<CapturedGraphBuild>;
+
+#endif
 
 template <MemorySpace Space, typename FindEquations>
 IcpOutcome ProjectiveIcpTracker::estimate_with(
     const BasicTrackingRequest<Space>& request,
     const FindEquations& find_equations) const {
   IcpOutcome outcome{.pose = request.initial_camera_to_world};
+  const auto fail = [&](IcpFailure code) {
+    outcome.result = std::unexpected(code);
+    return outcome;
+  };
 
   const Eigen::Matrix4f model_world_to_camera =
       request.model_camera_to_world.inverse();
@@ -89,30 +121,27 @@ IcpOutcome ProjectiveIcpTracker::estimate_with(
           equations.distance_sum / static_cast<float>(equations.count);
     }
     if (equations.count < options_.min_correspondences) {
-      outcome.result = std::unexpected(IcpFailure::kTooFewCorrespondences);
-      return outcome;
+      return fail(IcpFailure::kTooFewCorrespondences);
     }
 
     const auto stability = check_system_stability(equations);
     outcome.diagnostics.min_system_eigenvalue = stability.min_eigenvalue;
     outcome.diagnostics.condition_number = stability.condition_number;
     if (!stability.stable) {
-      outcome.result = std::unexpected(IcpFailure::kUnconstrainedSystem);
-      return outcome;
+      return fail(IcpFailure::kUnconstrainedSystem);
     }
 
     const auto increment = solve_increment(equations);
     if (!increment.solved) {
-      outcome.result = std::unexpected(IcpFailure::kSolveFailed);
-      return outcome;
+      return fail(IcpFailure::kSolveFailed);
     }
 
     outcome.diagnostics.update_translation = increment.update_translation;
     outcome.diagnostics.update_rotation = increment.update_rotation;
+
     if (increment.update_translation > options_.max_update_translation ||
         increment.update_rotation > options_.max_update_rotation) {
-      outcome.result = std::unexpected(IcpFailure::kUpdateTooLarge);
-      return outcome;
+      return fail(IcpFailure::kUpdateTooLarge);
     }
 
     outcome.pose = increment.transform * outcome.pose;
@@ -190,8 +219,10 @@ ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
 
   const Eigen::Vector3f angle_axis = solution.head<3>();
   const Eigen::Vector3f translation = solution.tail<3>();
+
   const float angle = angle_axis.norm();
   Eigen::Matrix3f rotation = Eigen::Matrix3f::Identity();
+
   if (angle > kMinimumRotationAngle) {
     rotation = Eigen::AngleAxisf(angle, angle_axis / angle).toRotationMatrix();
   }

@@ -80,8 +80,10 @@ on the same input frames and compares each against a reference pipeline:
 ```
 
 Per-frame deviation statistics against the reference are logged and appended to
-`<output-dir>/ablation_stats.csv`; each pipeline writes its raycasts to
-`<output-dir>/<pipeline-name>/`.
+`<output-dir>/ablation_stats.csv` (truncated at the start of each run). The
+reference pipeline writes its raycasts to `<output-dir>/` every frame; the
+other pipelines write theirs to `<output-dir>/<pipeline-name>/` on comparison
+frames.
 
 The TOML file has two optional top-level keys and one `[[pipeline]]` table per
 pipeline:

@@ -2,6 +2,7 @@
 #define KINECTFUSION_SRC_APP_RECONSTRUCTION_HPP
 
 #include <Eigen/Core>
+#include <cstddef>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/pipeline_set.hpp>
@@ -9,6 +10,7 @@
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
@@ -24,18 +26,15 @@ class Reconstruction {
   [[nodiscard]] int run();
 
  private:
-  using SurfacePyramid = kinectfusion::SurfacePyramid;
-
   [[nodiscard]] bool initialize();
   void process_frame();
-  [[nodiscard]] kinectfusion::IcpOutcome track_pose(
-      const SurfacePyramid& live_pyramid);
-  void integrate_tracked_frame(const SurfacePyramid& live_pyramid,
-                               const kinectfusion::IcpOutcome& tracking);
+  [[nodiscard]] kinectfusion::IcpOutcome track_pose(std::size_t levels);
+  void integrate_tracked_frame(const kinectfusion::IcpOutcome& tracking);
   // Fuses the current sensor frame into every pipeline at the tracked pose.
-  void integrate_frame(const kinectfusion::image_proc::Vector3fImage* normals);
+  void integrate_frame();
   void relocalize(const kinectfusion::IcpOutcome& tracking);
-  [[nodiscard]] SurfacePyramid build_pyramid() const;
+  // Rebuilds the pyramid for the current sensor frame; returns level count.
+  [[nodiscard]] std::size_t build_pyramid();
   void render_model_outputs();
   void log_pipelines() const;
   void log_frame_loaded() const;
@@ -44,8 +43,7 @@ class Reconstruction {
   FrameOutput frame_output_;
   kinectfusion::VirtualSensor sensor_;
   kinectfusion::ProjectiveIcpTracker tracker_;
-  kinectfusion::DepthProcessor<kinectfusion::MemorySpace::kHost>
-      depth_processor_;
+  std::unique_ptr<kinectfusion::PyramidSource> pyramid_source_;
   kinectfusion::PipelineSet pipelines_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
   int processed_frames_{1};

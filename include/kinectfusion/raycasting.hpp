@@ -30,13 +30,15 @@ struct RaycastCamera {
   }
 };
 
-// Marches a ray per pixel and writes the surface samples it finds.
-template <MemorySpace Space = MemorySpace::kHost>
+// Marches a ray per pixel and writes the surface samples it finds. Generic
+// over the sampler, so a different volume representation swaps in behind
+// TsdfVolumeSampler without touching the marcher.
+template <MemorySpace Space = MemorySpace::kHost,
+          TsdfVolumeSampler Sampler = VolumeSampler<Space>>
 class SurfaceRaycast {
  public:
-  SurfaceRaycast(const VolumeSampler<Space>& sampler,
-                 const RaycastOptions& options, const RigidTransform& pose,
-                 const CameraIntrinsics& intrinsics)
+  SurfaceRaycast(const Sampler& sampler, const RaycastOptions& options,
+                 const RigidTransform& pose, const CameraIntrinsics& intrinsics)
       : sampler_(sampler),
         options_(options),
         pose_(pose),
@@ -124,7 +126,7 @@ class SurfaceRaycast {
     }
   }
 
-  VolumeSampler<Space> sampler_;
+  Sampler sampler_;
   RaycastOptions options_;
   RigidTransform pose_;
   CameraIntrinsics intrinsics_;

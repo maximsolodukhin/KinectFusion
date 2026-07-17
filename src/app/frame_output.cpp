@@ -1,18 +1,31 @@
 #include "frame_output.hpp"
 
+#include <spdlog/spdlog.h>
+
+#include <array>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <future>
+#include <ios>
 #include <kinectfusion/image_proc/write_png.hpp>
+#include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "app_options.hpp"
-#include "logging.hpp"
+// Provides the std::formatter specializations behind "{:csv}".
+#include "logging.hpp"  // IWYU pragma: keep
 
 namespace app {
 
@@ -20,6 +33,21 @@ FrameOutput::FrameOutput(const AppOptions& options)
     : output_dir_(options.output_dir),
       write_raycast_images_(options.write_raycast_images),
       write_point_clouds_(options.write_point_clouds) {}
+
+FrameOutput::~FrameOutput() {
+  try {
+    finish_pending_writes();
+  } catch (const std::exception& error) {
+    spdlog::error("Frame output write failed: {}", error.what());
+  }
+}
+
+void FrameOutput::finish_pending_writes() {
+  for (auto& pending : pending_writes_) {
+    pending.get();
+  }
+  pending_writes_.clear();
+}
 
 std::string FrameOutput::frame_prefix(int frame_index) {
   return std::format("frame_{:06d}", frame_index);
@@ -35,27 +63,47 @@ void FrameOutput::write_raycast_image(const kinectfusion::SurfaceMaps& maps,
 void FrameOutput::write_raycast_point_cloud(
     const kinectfusion::SurfaceMaps& maps, const std::filesystem::path& dir,
     const std::string& prefix) {
+  static_assert(std::endian::native == std::endian::little);
   const auto& points = maps.points.data();
   const auto& normals = maps.normals.data();
   const auto& colors = maps.colors.data();
 
+  std::string vertices;
+  constexpr std::size_t kVertexBytes =
+      (2 * sizeof(kinectfusion::Vec3f)) + (3 * sizeof(std::uint8_t));
+  vertices.reserve(points.size() * kVertexBytes);
+  const auto append_vec3f = [&vertices](const kinectfusion::Vec3f& value) {
+    const auto bytes =
+        std::bit_cast<std::array<char, sizeof(kinectfusion::Vec3f)>>(value);
+    vertices.append(bytes.data(), bytes.size());
+  };
+
   std::size_t vertex_count = 0;
   for (std::size_t i = 0; i < points.size(); ++i) {
-    if (kinectfusion::all_finite(points.at(i)) &&
-        kinectfusion::all_finite(normals.at(i))) {
-      ++vertex_count;
+    const auto& point = points.at(i);
+    const auto& normal = normals.at(i);
+    if (!kinectfusion::all_finite(point) || !kinectfusion::all_finite(normal)) {
+      continue;
     }
+
+    ++vertex_count;
+    append_vec3f(point);
+    append_vec3f(normal);
+    const auto color = kinectfusion::rgba_from_pixel(colors.at(i));
+    vertices.push_back(static_cast<char>(color.x()));
+    vertices.push_back(static_cast<char>(color.y()));
+    vertices.push_back(static_cast<char>(color.z()));
   }
 
   const auto path = dir / (prefix + "_raycast_point_cloud.ply");
-  std::ofstream output{path};
+  std::ofstream output{path, std::ios::binary};
   if (!output) {
     throw std::runtime_error{"Failed to open point cloud output: " +
                              path.string()};
   }
 
   output << "ply\n"
-         << "format ascii 1.0\n"
+         << "format binary_little_endian 1.0\n"
          << "element vertex " << vertex_count << '\n'
          << "property float x\n"
          << "property float y\n"
@@ -67,38 +115,34 @@ void FrameOutput::write_raycast_point_cloud(
          << "property uchar green\n"
          << "property uchar blue\n"
          << "end_header\n";
-
-  for (std::size_t i = 0; i < points.size(); ++i) {
-    const auto& point = points.at(i);
-    const auto& normal = normals.at(i);
-    if (!kinectfusion::all_finite(point) || !kinectfusion::all_finite(normal)) {
-      continue;
-    }
-
-    const auto color = kinectfusion::rgba_from_pixel(colors.at(i));
-    output << point.x << ' ' << point.y << ' ' << point.z << ' ' << normal.x
-           << ' ' << normal.y << ' ' << normal.z << ' '
-           << static_cast<int>(color.x()) << ' ' << static_cast<int>(color.y())
-           << ' ' << static_cast<int>(color.z()) << '\n';
-  }
+  output.write(vertices.data(), static_cast<std::streamsize>(vertices.size()));
 }
 
-void FrameOutput::write_frame(const kinectfusion::SurfaceMaps& maps,
-                              int frame_index,
-                              const std::string& subdirectory) const {
-  if (!write_raycast_images_ && !write_point_clouds_) {
+void FrameOutput::write_frame(kinectfusion::SurfaceMaps maps, int frame_index,
+                              const std::string& subdirectory) {
+  if (!writes_frames()) {
     return;
   }
 
-  const auto dir =
-      subdirectory.empty() ? output_dir_ : output_dir_ / subdirectory;
+  while (pending_writes_.size() >= kMaxPendingWrites) {
+    pending_writes_.front().get();
+    pending_writes_.pop_front();
+  }
+  auto dir = subdirectory.empty() ? output_dir_ : output_dir_ / subdirectory;
   std::filesystem::create_directories(dir);
-  const auto prefix = frame_prefix(frame_index);
+  auto prefix = frame_prefix(frame_index);
+  const auto shared =
+      std::make_shared<const kinectfusion::SurfaceMaps>(std::move(maps));
   if (write_raycast_images_) {
-    write_raycast_image(maps, dir, prefix);
+    pending_writes_.push_back(std::async(
+        std::launch::async,
+        [shared, dir, prefix] { write_raycast_image(*shared, dir, prefix); }));
   }
   if (write_point_clouds_) {
-    write_raycast_point_cloud(maps, dir, prefix);
+    pending_writes_.push_back(
+        std::async(std::launch::async, [shared, dir, prefix] {
+          write_raycast_point_cloud(*shared, dir, prefix);
+        }));
   }
 }
 

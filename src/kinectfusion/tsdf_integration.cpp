@@ -2,6 +2,7 @@
 #include <kinectfusion/grid.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <variant>
 

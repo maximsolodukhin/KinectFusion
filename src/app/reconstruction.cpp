@@ -3,13 +3,16 @@
 #include <spdlog/spdlog.h>
 
 // Eigen/Core declares MatrixBase::inverse(); Eigen/LU defines it.
-#include <Eigen/LU>
+#include <Eigen/LU>  // NOLINT(misc-include-cleaner)
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <format>
 #include <iostream>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
-#include <kinectfusion/volume.hpp>
+#include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/tsdf_integration.hpp>
 #include <utility>
 #include <variant>
 
@@ -23,15 +26,22 @@ Reconstruction::Reconstruction(AppOptions options)
     : options_(std::move(options)),
       frame_output_(options_),
       tracker_(options_.icp_options()),
-      depth_processor_(options_.depth_options()),
       pipelines_(
-          kinectfusion::PipelineSet::create(options_.pipeline_set_config())) {}
+          kinectfusion::PipelineSet::create(options_.pipeline_set_config())) {
+  auto creation = kinectfusion::PyramidSource::create(pipelines_.common_space(),
+                                                      options_.depth_options());
+  if (!creation.fallback_reason.empty()) {
+    log_warn("Depth pyramid: {}", creation.fallback_reason);
+  }
+  pyramid_source_ = std::move(creation.source);
+}
 
 int Reconstruction::run() {
   if (!initialize()) {
     return EXIT_FAILURE;
   }
 
+  const auto loop_start = std::chrono::steady_clock::now();
   while (options_.max_frames < 0 || processed_frames_ < options_.max_frames) {
     log_info("Loading next frame");
     if (!sensor_.process_next_frame()) {
@@ -39,9 +49,19 @@ int Reconstruction::run() {
     }
     process_frame();
   }
+  const std::chrono::duration<double> loop_seconds =
+      std::chrono::steady_clock::now() - loop_start;
 
   log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
            processed_frames_, pipelines_.reference().observed_voxel_count());
+  if (processed_frames_ > 0 && loop_seconds.count() > 0.0) {
+    // Kept as cout + format because it's a single most important summary line
+    // and I want it even with disabled logging.
+    std::cout << std::format(
+        "Frame loop: {} frames in {:.2f} s ({:.1f} fps)\n", processed_frames_,
+        loop_seconds.count(),
+        static_cast<double>(processed_frames_) / loop_seconds.count());
+  }
 
   return EXIT_SUCCESS;
 }
@@ -49,7 +69,7 @@ int Reconstruction::run() {
 bool Reconstruction::initialize() {
   log_pipelines();
   log_info("Opening dataset: {}", options_.dataset_dir.string());
-  if (!sensor_.init(options_.dataset_dir)) {
+  if (!sensor_.init(options_.dataset_dir, options_.preload_frames)) {
     spdlog::error("Failed to initialize dataset: {}",
                   options_.dataset_dir.string());
     return false;
@@ -64,17 +84,15 @@ bool Reconstruction::initialize() {
 
   log_info("Frame {}: building surface pyramid (requested levels={})",
            sensor_.current_frame_index(), options_.depth_options().levels);
-  const auto initial_pyramid = build_pyramid();
+  const auto initial_levels = build_pyramid();
   log_info("Frame {}: built {} pyramid level(s)", sensor_.current_frame_index(),
-           initial_pyramid.size());
-  const auto* initial_normals =
-      initial_pyramid.empty() ? nullptr : &initial_pyramid.front().maps.normals;
+           initial_levels);
 
   log_info(
       "Frame {}: integrating first depth frame into TSDF volume ({}^3 "
       "voxels)",
       sensor_.current_frame_index(), options_.volume_resolution);
-  integrate_frame(initial_normals);
+  integrate_frame();
 
   log_info("Frame {}: raycasting initialized model",
            sensor_.current_frame_index());
@@ -90,26 +108,25 @@ void Reconstruction::process_frame() {
   log_frame_loaded();
   log_info("Frame {}: building live surface pyramid",
            sensor_.current_frame_index());
-  const auto live_pyramid = build_pyramid();
-  if (live_pyramid.empty()) {
+  const auto levels = build_pyramid();
+  if (levels == 0) {
     log_warn("Frame {} produced no depth pyramid",
              sensor_.current_frame_index());
     return;
   }
   log_info("Frame {}: built {} live pyramid level(s)",
-           sensor_.current_frame_index(), live_pyramid.size());
+           sensor_.current_frame_index(), levels);
 
-  const auto tracking = track_pose(live_pyramid);
+  const auto tracking = track_pose(levels);
   if (tracking.result) {
-    integrate_tracked_frame(live_pyramid, tracking);
+    integrate_tracked_frame(tracking);
   } else {
     relocalize(tracking);
   }
   ++processed_frames_;
 }
 
-kinectfusion::IcpOutcome Reconstruction::track_pose(
-    const SurfacePyramid& live_pyramid) {
+kinectfusion::IcpOutcome Reconstruction::track_pose(std::size_t levels) {
   kinectfusion::IcpOutcome tracking;
   tracking.pose = camera_to_world_;
   auto tracked_pose = camera_to_world_;
@@ -117,26 +134,25 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
   log_info("Frame {}: tracking pose with projective ICP",
            sensor_.current_frame_index());
 
-  for (std::size_t level_index = live_pyramid.size(); level_index-- > 0;) {
+  for (std::size_t level_index = levels; level_index-- > 0;) {
     const auto level = static_cast<unsigned int>(level_index);
     log_info("Frame {} level {}: raycasting model prediction",
              sensor_.current_frame_index(), level);
 
     const auto camera =
         AppOptions::raycast_camera(sensor_, tracked_pose, level);
-    const auto level_intrinsics = sensor_.depth_intrinsics().scaled(level);
+    const auto pyramid_level = pyramid_source_->level(level_index);
     const unsigned int iterations = options_.icp_iterations_for_level(level);
 
     log_info("Frame {} level {}: running ICP (iterations={})",
              sensor_.current_frame_index(), level, iterations);
 
-    const auto live_views = view(live_pyramid.at(level_index).maps);
     tracking = std::visit(
         [&](const auto& surfaces) {
-          return tracker_.estimate_pose(surfaces, level_intrinsics,
+          return tracker_.estimate_pose(surfaces, pyramid_level.intrinsics,
                                         tracked_pose, iterations);
         },
-        pipelines_.tracking_surfaces(camera, live_views));
+        pipelines_.tracking_surfaces(camera, pyramid_level.surface));
 
     log_info("Frame {} level {}: ICP result={} {}",
              sensor_.current_frame_index(), level,
@@ -151,7 +167,6 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(
 }
 
 void Reconstruction::integrate_tracked_frame(
-    const SurfacePyramid& live_pyramid,
     const kinectfusion::IcpOutcome& tracking) {
   if (relocalizing_) {
     log_info("Relocalized at frame {} after {} frame(s): {}",
@@ -165,7 +180,7 @@ void Reconstruction::integrate_tracked_frame(
 
   log_info("Frame {}: integrating tracked depth frame into TSDF volume",
            sensor_.current_frame_index());
-  integrate_frame(&live_pyramid.front().maps.normals);
+  integrate_frame();
 
   log_info("Frame {}: raycasting updated model", sensor_.current_frame_index());
   render_model_outputs();
@@ -175,13 +190,14 @@ void Reconstruction::integrate_tracked_frame(
            pipelines_.reference().observed_voxel_count());
 }
 
-void Reconstruction::integrate_frame(
-    const kinectfusion::image_proc::Vector3fImage* normals) {
-  pipelines_.integrate({.depth = &sensor_.depth_image(),
-                        .color = &sensor_.color_image(),
-                        .normals = normals,
-                        .intrinsics = sensor_.depth_intrinsics(),
-                        .world_to_camera = camera_to_world_.inverse()});
+void Reconstruction::integrate_frame() {
+  const kinectfusion::DepthFrame frame{
+      .depth = &sensor_.depth_image(),
+      .color = &sensor_.color_image(),
+      .normals = pyramid_source_->host_normals(),
+      .intrinsics = sensor_.depth_intrinsics(),
+      .world_to_camera = camera_to_world_.inverse()};
+  pipelines_.integrate(frame, pyramid_source_->device_frame(frame));
 }
 
 void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
@@ -201,13 +217,17 @@ void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
   }
 }
 
-Reconstruction::SurfacePyramid Reconstruction::build_pyramid() const {
-  return depth_processor_.build_surface_pyramid(sensor_.depth_image(),
-                                                sensor_.depth_intrinsics());
+std::size_t Reconstruction::build_pyramid() {
+  return pyramid_source_->build(sensor_.depth_image(),
+                                sensor_.depth_intrinsics());
 }
 
 void Reconstruction::render_model_outputs() {
   const int frame_index = sensor_.current_frame_index();
+  if (!frame_output_.writes_frames() &&
+      !pipelines_.should_compare(frame_index)) {
+    return;
+  }
   const auto camera = AppOptions::raycast_camera(sensor_, camera_to_world_, 0);
 
   log_info("Frame {}: writing outputs to {}", frame_index,
@@ -226,9 +246,9 @@ void Reconstruction::render_model_outputs() {
   frame_output_.append_ablation_stats(frame_index, comparisons);
 
   const std::string reference_name = pipelines_.reference().name();
-  for (const auto& output : outputs) {
+  for (auto& output : outputs) {
     const bool is_reference = output.name == reference_name;
-    frame_output_.write_frame(output.maps, frame_index,
+    frame_output_.write_frame(std::move(output.maps), frame_index,
                               is_reference ? std::string{} : output.name);
   }
 }

@@ -9,6 +9,7 @@
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
 #include <type_traits>
 
 namespace kinectfusion {
@@ -119,12 +120,12 @@ struct CorrespondenceGates {
 
 template <MemorySpace Space>
 struct TrackingSurfaces {
-  ConstVertexNormalMapsView<Space> live{};
-  ConstVertexNormalMapsView<Space> model{};
+  ConstSurfaceView<Space> live{};
+  ConstSurfaceView<Space> model{};
 
   // Pairs the live views with the vertex/normal planes of a rendered model.
   [[nodiscard]] static TrackingSurfaces from_render(
-      const ConstVertexNormalMapsView<Space>& live_views,
+      const ConstSurfaceView<Space>& live_views,
       const ConstSurfaceMapsView<Space>& model_render) {
     return {.live = live_views,
             .model = {.vertices = model_render.points,
@@ -150,9 +151,8 @@ class CorrespondenceSearch {
         transforms_(transforms),
         gates_(gates) {}
 
-  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE const
-      ConstVertexNormalMapsView<Space>&
-      live() const {
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE const ConstSurfaceView<Space>&
+  live() const {
     return surfaces_.live;
   }
 
@@ -213,12 +213,42 @@ class CorrespondenceSearch {
 using HostCorrespondenceSearch = CorrespondenceSearch<MemorySpace::kHost>;
 using DeviceCorrespondenceSearch = CorrespondenceSearch<MemorySpace::kDevice>;
 
-// Synchronous. throws std::runtime_error on CUDA failures
-class DeviceCorrespondenceSweep {
+// Selects how one iteration's reduction graph is constructed. Both tags record
+// the same nodes and produce the same result; they exist to ablate the
+// graph-construction cost against each other.
+struct ExplicitGraphBuild {};  // assembled node by node through the graph API
+struct CapturedGraphBuild {};  // recorded from stream capture
+
+// Owns the per-iteration reduction: the device buffers, the private stream, and
+// the grid-indexed executable-graph cache. `Build` picks the graph-construction
+// strategy without touching the shared reduction kernel.
+template <typename Build>
+class BasicDeviceCorrespondenceSweep {
  public:
-  [[nodiscard]] static IcpNormalEquations run(
+  BasicDeviceCorrespondenceSweep();
+  ~BasicDeviceCorrespondenceSweep();
+
+  BasicDeviceCorrespondenceSweep(const BasicDeviceCorrespondenceSweep&) =
+      delete;
+  BasicDeviceCorrespondenceSweep& operator=(
+      const BasicDeviceCorrespondenceSweep&) = delete;
+  BasicDeviceCorrespondenceSweep(BasicDeviceCorrespondenceSweep&&) noexcept;
+  BasicDeviceCorrespondenceSweep& operator=(
+      BasicDeviceCorrespondenceSweep&&) noexcept;
+
+  [[nodiscard]] IcpNormalEquations run(
       const DeviceCorrespondenceSearch& search);
+
+ private:
+  struct Scratch;
+
+  std::unique_ptr<Scratch> scratch_;
 };
+
+using DeviceCorrespondenceSweep =
+    BasicDeviceCorrespondenceSweep<ExplicitGraphBuild>;
+using CapturedCorrespondenceSweep =
+    BasicDeviceCorrespondenceSweep<CapturedGraphBuild>;
 
 }  // namespace kinectfusion
 

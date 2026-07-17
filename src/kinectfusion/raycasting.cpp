@@ -4,7 +4,6 @@
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
-#include <kinectfusion/volume_sampler.hpp>
 
 namespace kinectfusion {
 

@@ -54,7 +54,6 @@ void DeviceRaycastSweep::run(const DeviceSurfaceRaycast& raycast,
                   cuda::ceil_div(maps.points.height, kBlock.y)};
   raycast_kernel<<<grid, kBlock>>>(raycast, maps);
   cuda::check(cudaGetLastError(), "raycast_kernel launch");
-  cuda::check(cudaDeviceSynchronize(), "raycast_kernel");
 }
 
 }  // namespace kinectfusion

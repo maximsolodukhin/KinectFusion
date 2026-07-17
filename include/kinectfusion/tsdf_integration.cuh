@@ -9,17 +9,20 @@ namespace kinectfusion {
 // color image, and normals.
 class DeviceDepthFrame {
  public:
-  // host to device copy on each frame
-  [[nodiscard]] static DeviceDepthFrame upload(const DepthFrame& frame);
+  DeviceDepthFrame() = default;
+ 
+  // Reuse memory of another frame, if the dimensions match.
+  void assign(const DepthFrame& frame);
+  void assign_from_pyramid(const DepthFrame& frame,
+                           const DeviceDepthImg& raw_depth,
+                           const DeviceVec3fImg& normals);
 
   [[nodiscard]] DeviceDepthFrameView view() const;
 
  private:
-  DeviceDepthFrame() = default;
-
-  image_proc::DeviceDepthImage depth_;
-  image_proc::DeviceColorImage color_;
-  image_proc::DeviceVector3fImage normals_;
+  DeviceDepthImg depth_;
+  DeviceColorImg color_;
+  DeviceVec3fImg normals_;
   CameraIntrinsics intrinsics_{};
   RigidTransform world_to_camera_{};
 };
@@ -27,7 +30,8 @@ class DeviceDepthFrame {
 // Device driver of the per-element TSDF layer, the mirror image of the
 // IntegrationSweep
 // One kernel instantiation per rule in the variant.
-// Synchronous. throws std::runtime_error on CUDA failures
+// Stream-ordered: launch errors throw here, execution errors surface at
+// the next device-to-host copy.
 class DeviceIntegrationSweep {
  public:
   static void run(const DeviceVolumeView& volume,

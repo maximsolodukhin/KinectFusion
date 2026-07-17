@@ -1,16 +1,26 @@
+// Also the nvcc canary: every kernel-reachable header is included here
+// explicitly so a header nvcc cannot compile fails this TU, not a later port.
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/depth_processing.cuh>
+#include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/device_volume.cuh>
+#include <kinectfusion/grid.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/image_proc/device_image.cuh>
+#include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/raycasting.cuh>
 #include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/rgbd.hpp>
+#include <kinectfusion/tsdf_integration.cuh>
 #include <kinectfusion/tsdf_integration.hpp>
+#include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_sampler.hpp>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -26,9 +36,12 @@ using kinectfusion::SpaceTraits;
 using kinectfusion::VolumeGeometry;
 using kinectfusion::Voxel;
 using kinectfusion::cuda::DeviceBuffer;
+using kinectfusion::image_proc::AnyDeviceImage;
 using kinectfusion::image_proc::DepthImageFor;
 using kinectfusion::image_proc::DeviceDepthImage;
 using kinectfusion::image_proc::DeviceImageView;
+using kinectfusion::image_proc::HostImageView;
+using kinectfusion::image_proc::RefillableFrom;
 
 static_assert(
     std::same_as<DeviceDepthImage, DepthImageFor<MemorySpace::kDevice>>);
@@ -43,6 +56,19 @@ static_assert(
 // Mutable views convert to read-only views, like std::span.
 static_assert(std::convertible_to<DeviceImageView<std::uint16_t>,
                                   DeviceImageView<const std::uint16_t>>);
+
+// A device image refills only from a same-pixel view; either space, since
+// frames arrive from a host upload or a device pyramid.
+static_assert(AnyDeviceImage<DeviceDepthImage>);
+static_assert(!AnyDeviceImage<DepthImageFor<MemorySpace::kHost>>);
+static_assert(!AnyDeviceImage<int>);
+static_assert(
+    RefillableFrom<DeviceDepthImage, HostImageView<const std::uint16_t>>);
+static_assert(
+    RefillableFrom<DeviceDepthImage, DeviceImageView<const std::uint16_t>>);
+static_assert(!RefillableFrom<DeviceDepthImage, DeviceImageView<const float>>);
+// Mutable sources arrive through the span-like read-only conversion.
+static_assert(RefillableFrom<DeviceDepthImage, DeviceImageView<std::uint16_t>>);
 
 using DeviceLevel = DepthProcessingLevel<MemorySpace::kDevice>;
 static_assert(DeviceLevel::depth_image_type::kMemorySpace ==
@@ -81,12 +107,22 @@ static_assert(std::same_as<
 // Kernel arguments are passed by value through the launch; everything the
 // per-element layer closes over must be trivially copyable.
 static_assert(std::is_trivially_copyable_v<
+              kinectfusion::BilateralFilter<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::BlockDownsample<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::VertexProjection<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
+              kinectfusion::NormalEstimation<MemorySpace::kDevice>>);
+static_assert(std::is_trivially_copyable_v<
               kinectfusion::DepthFrameView<MemorySpace::kDevice>>);
 static_assert(std::is_trivially_copyable_v<
               kinectfusion::IntegrationContext<MemorySpace::kDevice>>);
 static_assert(std::is_trivially_copyable_v<
               kinectfusion::VolumeView<MemorySpace::kDevice>>);
 static_assert(std::is_trivially_copyable_v<
+              kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
+static_assert(kinectfusion::TsdfVolumeSampler<
               kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
 static_assert(std::is_trivially_copyable_v<kinectfusion::DeviceSurfaceRaycast>);
 
@@ -113,5 +149,21 @@ static_assert(
                             const kinectfusion::CameraIntrinsics&,
                             const kinectfusion::IcpIterationTransforms&,
                             const kinectfusion::CorrespondenceGates&>);
+
+// Both graph-build variants of the sweep are default-constructible, move-only,
+// and reduce to the same normal-equations type; they only differ in how the
+// replayed graph is built.
+static_assert(
+    std::default_initializable<kinectfusion::DeviceCorrespondenceSweep>);
+static_assert(
+    std::default_initializable<kinectfusion::CapturedCorrespondenceSweep>);
+static_assert(std::movable<kinectfusion::CapturedCorrespondenceSweep>);
+static_assert(
+    !std::copy_constructible<kinectfusion::CapturedCorrespondenceSweep>);
+static_assert(
+    std::same_as<
+        decltype(std::declval<kinectfusion::CapturedCorrespondenceSweep&>().run(
+            std::declval<const kinectfusion::DeviceCorrespondenceSearch&>())),
+        kinectfusion::IcpNormalEquations>);
 
 }  // namespace

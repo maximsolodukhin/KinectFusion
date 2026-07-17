@@ -20,13 +20,11 @@ class DeviceSurfaceMaps {
   [[nodiscard]] SurfaceMaps download() const;
 
  private:
-  image_proc::DeviceVector3fImage points_;
-  image_proc::DeviceVector3fImage normals_;
-  image_proc::DeviceColorImage colors_;
+  DeviceVec3fImg points_;
+  DeviceVec3fImg normals_;
+  DeviceColorImg colors_;
 };
 
-// Mirror of Raycaster::raycast host loop.
-// Synchronous. throws std::runtime_error on CUDA failures
 class DeviceRaycastSweep {
  public:
   static void run(const DeviceSurfaceRaycast& raycast,

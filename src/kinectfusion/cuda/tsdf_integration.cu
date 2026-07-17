@@ -23,27 +23,41 @@ __global__ void integrate_kernel(DeviceVolumeView volume,
   }
 }
 
+// A null-data source empties the image.
+template <typename Img, typename View>
+  requires image_proc::RefillableFrom<Img, View>
+void assign_image(Img& image, const View& source) {
+  if (source.data == nullptr) {
+    image = {};
+    return;
+  }
+  image.ensure_extent(source.width, source.height);
+  image.copy_from(source);
+}
+
 }  // namespace
 
-DeviceDepthFrame DeviceDepthFrame::upload(const DepthFrame& frame) {
-  using DeviceDepthImg = image_proc::DeviceDepthImage;
-  using DeviceColorImg = image_proc::DeviceColorImage;
-  using DeviceVec3fImg = image_proc::DeviceVector3fImage;
+void DeviceDepthFrame::assign(const DepthFrame& frame) {
   const HostDepthFrameView host = frame.view();
+  intrinsics_ = host.intrinsics;
+  world_to_camera_ = host.world_to_camera;
+  assign_image(depth_, host.depth);
+  assign_image(color_, host.color);
+  assign_image(normals_, host.normals);
+}
 
-  DeviceDepthFrame device;
-  device.intrinsics_ = host.intrinsics;
-  device.world_to_camera_ = host.world_to_camera;
-  if (host.depth.data != nullptr) {
-    device.depth_ = DeviceDepthImg::uploaded(host.depth);
+void DeviceDepthFrame::assign_from_pyramid(const DepthFrame& frame,
+                                           const DeviceDepthImg& raw_depth,
+                                           const DeviceVec3fImg& normals) {
+  intrinsics_ = frame.intrinsics;
+  world_to_camera_ = from_eigen(frame.world_to_camera);
+  assign_image(depth_, raw_depth.view());
+  if (frame.color != nullptr) {
+    assign_image(color_, frame.color->view());
+  } else {
+    color_ = {};
   }
-  if (host.color.data != nullptr) {
-    device.color_ = DeviceColorImg::uploaded(host.color);
-  }
-  if (host.normals.data != nullptr) {
-    device.normals_ = DeviceVec3fImg::uploaded(host.normals);
-  }
-  return device;
+  assign_image(normals_, normals.view());
 }
 
 DeviceDepthFrameView DeviceDepthFrame::view() const {
@@ -66,7 +80,6 @@ void DeviceIntegrationSweep::run(const DeviceVolumeView& volume,
       },
       rule);
   cuda::check(cudaGetLastError(), "integrate_kernel launch");
-  cuda::check(cudaDeviceSynchronize(), "integrate_kernel");
 }
 
 }  // namespace kinectfusion

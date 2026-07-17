@@ -36,19 +36,33 @@ class PipelineSet {
   struct Member {
     std::unique_ptr<Pipeline> pipeline;
     std::string fallback_reason;
+    // The space the pipeline actually runs in, after any fallback.
+    MemorySpace space{MemorySpace::kHost};
   };
 
   // Throws std::invalid_argument on an empty set, duplicate names, an
   // unknown reference, or mismatched volume geometries.
   [[nodiscard]] static PipelineSet create(const PipelineSetConfig& config);
 
-  void integrate(const DepthFrame& frame);
+  void integrate(const DepthFrame& frame,
+                 const DeviceDepthFrame* shared_upload = nullptr);
 
   [[nodiscard]] SurfaceMaps raycast_reference(const RaycastCamera& camera);
 
   // Tracking views from the reference pipeline, in its own memory space.
   [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera, const ConstHostVertexNormalMapsView& live);
+      const RaycastCamera& camera, const LiveViewsVariant& live);
+
+  // kDevice only when every member runs on the device
+  // Decides where shared input processing runs.
+  [[nodiscard]] MemorySpace common_space() const {
+    for (const Member& member : members_) {
+      if (member.space != MemorySpace::kDevice) {
+        return MemorySpace::kHost;
+      }
+    }
+    return MemorySpace::kDevice;
+  }
 
   // Ordered like members().
   [[nodiscard]] std::vector<PipelineOutput> raycast_all(

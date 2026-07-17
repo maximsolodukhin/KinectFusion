@@ -12,6 +12,7 @@
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_sampler.hpp>
 #include <string>
 
 #include "pipeline_config.hpp"
@@ -120,7 +121,10 @@ kinectfusion::ProjectiveIcpOptions AppOptions::icp_options() const {
       .max_update_translation = max_pose_update_translation,
       .max_update_rotation = max_pose_update_rotation,
       .min_system_eigenvalue = min_icp_eigenvalue,
-      .max_condition_number = max_icp_condition_number};
+      .max_condition_number = max_icp_condition_number,
+      .device_graph_build = icp_capture_graph
+                                ? kinectfusion::IcpGraphBuild::kCaptured
+                                : kinectfusion::IcpGraphBuild::kExplicit};
 }
 
 unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
@@ -175,6 +179,9 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_option("--max-icp-condition-number",
                  app_options.max_icp_condition_number,
                  "Maximum accepted ICP normal-system condition number.");
+  app.add_flag("--icp-capture-graph", app_options.icp_capture_graph,
+               "Ablation: build the device ICP reduction graph by stream "
+               "capture instead of the explicit node API.");
   app.add_flag("--projective-tsdf-distance,!--no-projective-tsdf-distance",
                app_options.projective_tsdf_distance,
                "Use lambda-corrected projective TSDF distance.");
@@ -213,6 +220,9 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_flag("--interactive-relocalization",
                app_options.interactive_relocalization,
                "Pause after tracking failure before continuing.");
+  app.add_flag("--preload", app_options.preload_frames,
+               "Decode the whole dataset into memory up front (~2 MB per "
+               "frame) so the frame loop measures pure pipeline throughput.");
   app.add_option("--output-dir", app_options.output_dir,
                  "Directory for raycast images and point clouds.");
   app.add_flag("--write-raycast-images,!--no-write-raycast-images",
@@ -220,7 +230,7 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
                "Write raycast color images as PNG files.");
   app.add_flag("--write-point-clouds,!--no-write-point-clouds",
                app_options.write_point_clouds,
-               "Write raycast point clouds as ASCII PLY files.");
+               "Write raycast point clouds as binary PLY files.");
   app.add_flag(
       "--raycast-tsdf-from-valid-corners,!--no-raycast-tsdf-from-valid-corners",
       app_options.raycast_tsdf_from_valid_corners,

@@ -1,3 +1,4 @@
+#include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <array>
@@ -9,6 +10,7 @@
 #include <kinectfusion/comparison.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/grid.hpp>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/pipeline.hpp>
@@ -19,9 +21,10 @@
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
-#include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -86,7 +89,7 @@ constexpr unsigned int kSyntheticImageSize = 16;
 }
 
 struct SyntheticSurface {
-  kinectfusion::VertexNormalMaps live;
+  kinectfusion::Surface live;
   kinectfusion::SurfaceMaps model;
 };
 
@@ -321,14 +324,16 @@ TEST_CASE("Pipeline factory always serves device requests", "[pipeline]") {
   // Without CUDA the request degrades to host execution with a reason; on a
   // CUDA build with a live device it is served natively with none. Either
   // way the pipeline below must work.
+  REQUIRE((creation.space == kinectfusion::MemorySpace::kDevice) ==
+          creation.fallback_reason.empty());
 
   creation.pipeline->integrate(
       {.depth = &depth, .intrinsics = synthetic_intrinsics()});
   REQUIRE(creation.pipeline->observed_voxel_count() > 0);
 
-  REQUIRE_THROWS_AS(
-      kinectfusion::Pipeline::create({.volume = synthetic_volume_geometry()}),
-      std::invalid_argument);
+  REQUIRE_THROWS_AS(kinectfusion::Pipeline::create(
+                        {.name = {}, .volume = synthetic_volume_geometry()}),
+                    std::invalid_argument);
 }
 
 TEST_CASE("Factory pipeline matches a directly composed pipeline",
@@ -405,14 +410,48 @@ TEST_CASE("Pipeline set compares variants against the reference",
   REQUIRE_THROWS_AS(
       kinectfusion::PipelineSet::create(
           {.pipelines = {{.name = "a", .volume = synthetic_volume_geometry()},
-                         {.name = "a",
-                          .volume = synthetic_volume_geometry()}}}),
+                         {.name = "a", .volume = synthetic_volume_geometry()}},
+           .reference = {}}),
       std::invalid_argument);
   REQUIRE_THROWS_AS(
       kinectfusion::PipelineSet::create(
           {.pipelines = {{.name = "a", .volume = synthetic_volume_geometry()}},
            .reference = "missing"}),
       std::invalid_argument);
+}
+
+TEST_CASE("Pipeline set refuses to substitute a member's memory space",
+          "[pipeline]") {
+  const auto probe = kinectfusion::Pipeline::create(
+      {.name = "probe",
+       .space = kinectfusion::MemorySpace::kDevice,
+       .volume = synthetic_volume_geometry()});
+  const bool device_served = probe.space == kinectfusion::MemorySpace::kDevice;
+
+  const kinectfusion::PipelineSetConfig mixed{
+      .pipelines = {{.name = "cpu",
+                     .space = kinectfusion::MemorySpace::kHost,
+                     .volume = synthetic_volume_geometry()},
+                    {.name = "gpu",
+                     .space = kinectfusion::MemorySpace::kDevice,
+                     .volume = synthetic_volume_geometry()}},
+      .reference = "cpu"};
+
+  // Running "gpu" on the host instead would compare the host against itself
+  // and report a flawless match for a port that never ran.
+  if (device_served) {
+    REQUIRE_NOTHROW(kinectfusion::PipelineSet::create(mixed));
+  } else {
+    REQUIRE_THROWS_AS(kinectfusion::PipelineSet::create(mixed),
+                      std::invalid_argument);
+  }
+
+  // A lone pipeline is a run, not a comparison, so it may still fall back.
+  REQUIRE_NOTHROW(kinectfusion::PipelineSet::create(
+      {.pipelines = {{.name = "gpu",
+                      .space = kinectfusion::MemorySpace::kDevice,
+                      .volume = synthetic_volume_geometry()}},
+       .reference = {}}));
 }
 
 TEST_CASE("Comparator measures surface map deviations per pixel",
@@ -526,7 +565,7 @@ TEST_CASE("Projective ICP rejects empty correspondence sets",
           "[projective_icp]") {
   constexpr unsigned int kWidth = 2;
   constexpr unsigned int kHeight = 2;
-  kinectfusion::VertexNormalMaps live_maps{
+  kinectfusion::Surface live_maps{
       .vertices = kinectfusion::image_proc::Vector3fImage{kWidth, kHeight},
       .normals = kinectfusion::image_proc::Vector3fImage{kWidth, kHeight}};
   kinectfusion::SurfaceMaps model_maps{

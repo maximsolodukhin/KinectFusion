@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/cuda_compat.hpp>
@@ -35,7 +36,7 @@ class VolumeSampler {
   // Converts to grid coordinates before bounds before checking bounds.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE bool contains(
       const Vec3f& point) const {
-    const Vec3f local = (point - volume_.origin()) / volume_.voxel_size();
+    const Vec3f local = grid_coords(point);
     // Scalar = float, no truncation
     return in_bounds(local.x, local.y, local.z);
   }
@@ -45,54 +46,38 @@ class VolumeSampler {
   // drops missing/uninitialised corners and reweights the rest.
   [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<float> tsdf(
       const Vec3f& point, CornerPolicy corner_policy) const {
-    if (!contains(point)) {
+    const Vec3f grid = grid_coords(point);
+    if (!in_bounds(grid.x, grid.y, grid.z)) {
       return compat::nullopt;
     }
 
-    const GridSample sample = grid_sample(point);
-    float accumulated = 0.0F;
-    float weight_sum = 0.0F;
-    for (const Corner& corner : trilinear_corners(sample)) {
-      const Voxel* voxel = find_voxel(corner);
-      if (voxel != nullptr && voxel->weight > 0.0F &&
-          std::isfinite(voxel->distance)) {
-        accumulated += corner.weight * voxel->distance;
-        weight_sum += corner.weight;
-        continue;
-      }
-      // Corner is out of bounds or unobserved. `kRequireAll` fails the
-      // sample; otherwise the corner is skipped and the remaining ones
-      // reweight.
-      if (corner_policy == CornerPolicy::kRequireAll) {
-        return compat::nullopt;
-      }
+    const GridSample sample = grid_sample_at(grid);
+    if (is_interior(sample.base)) {
+      return blend_tsdf(sample.fraction, corner_policy,
+                        flat_corners(volume_.voxels, sample.base));
     }
-    if (weight_sum <= kMinimumTrilinearWeightSum) {
-      return compat::nullopt;
-    }
-
-    const float distance = accumulated / weight_sum;
-    return std::isfinite(distance) ? compat::optional<float>{distance}
-                                   : compat::nullopt;
+    return blend_tsdf(
+        sample.fraction, corner_policy,
+        [this, &sample](int offset_x, int offset_y, int offset_z) {
+          return find_voxel(sample.base.x + offset_x, sample.base.y + offset_y,
+                            sample.base.z + offset_z);
+        });
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f> color(
       const Vec3f& point) const {
-    const GridSample sample = grid_sample(point);
-    Vec3f accumulated{};
-    float weight_sum = 0.0F;
-    for (const Corner& corner : trilinear_corners(sample)) {
-      const ColorVoxel* voxel = find_color_voxel(corner);
-      if (voxel == nullptr || voxel->weight <= 0.0F) {
-        continue;
-      }
-      accumulated += corner.weight * voxel->color;
-      weight_sum += corner.weight;
+    const GridSample sample = grid_sample_at(grid_coords(point));
+    if (is_interior(sample.base)) {
+      return blend_color(sample.fraction,
+                         flat_corners(volume_.colors, sample.base));
     }
-    if (weight_sum <= kMinimumTrilinearWeightSum) {
-      return compat::nullopt;
-    }
-    return accumulated / weight_sum;
+    return blend_color(
+        sample.fraction,
+        [this, &sample](int offset_x, int offset_y, int offset_z) {
+          return find_color_voxel(sample.base.x + offset_x,
+                                  sample.base.y + offset_y,
+                                  sample.base.z + offset_z);
+        });
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f> normal(
@@ -134,20 +119,36 @@ class VolumeSampler {
                       axis == 2 ? 1.0F : 0.0F);
   }
 
-  // A voxel cube has eight corners; used both as the trilinear stencil size
-  // and for the `Corner` arrays returned by `trilinear_corners`.
-  static constexpr std::size_t kTrilinearCornerCount = 8;
-
-  struct Corner {
-    int x, y, z;
-    float weight;
-  };
-
   struct GridSample {
     // may be negative so vec3i
     Vec3i base{};
     Vec3f fraction{};
   };
+
+  // Per-component truncation toward zero; callers pass already-floored values.
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE static Vec3i to_vec3i(
+      const Vec3f& value) {
+    return Vec3i{.x = static_cast<int>(value.x),
+                 .y = static_cast<int>(value.y),
+                 .z = static_cast<int>(value.z)};
+  }
+
+  // The eight corners of one trilinear stencil.
+  static constexpr int kStencilCorners = 8;
+
+  // Visits the stencil corners in (x, y, z) order; the accumulation order is
+  // load-bearing for bit-identical float sums across host and device.
+  template <typename Visit>
+  KINECTFUSION_FORCEINLINE_DEVICE static void for_each_corner(
+      const Visit& visit) {
+    for (int offset_z = 0; offset_z <= 1; ++offset_z) {
+      for (int offset_y = 0; offset_y <= 1; ++offset_y) {
+        for (int offset_x = 0; offset_x <= 1; ++offset_x) {
+          visit(offset_x, offset_y, offset_z);
+        }
+      }
+    }
+  }
 
   // One axis of a trilinear weight: the linear blend between the near voxel
   // (offset 0, weight 1 - fraction) and the far voxel (offset 1, weight
@@ -175,65 +176,156 @@ class VolumeSampler {
            static_cast<std::size_t>(z) < volume_.resolution().z;
   }
 
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE GridSample
-  grid_sample(const Vec3f& point) const {
-    const Vec3f grid =
-        ((point - volume_.origin()) / volume_.voxel_size()) - kCenterOffset;
+  // World point in continuous grid coordinates; shared by the bounds check
+  // and the sample so the conversion happens once per lookup.
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Vec3f
+  grid_coords(const Vec3f& point) const {
+    return (point - volume_.origin()) / volume_.voxel_size();
+  }
+
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE static GridSample grid_sample_at(
+      const Vec3f& grid_point) {
+    const Vec3f grid = grid_point - kCenterOffset;
     const Vec3f floored =
         make_vec3f(std::floor(grid.x), std::floor(grid.y), std::floor(grid.z));
-    return GridSample{.base = Vec3i{.x = static_cast<int>(floored.x),
-                                    .y = static_cast<int>(floored.y),
-                                    .z = static_cast<int>(floored.z)},
-                      .fraction = grid - floored};
+    return GridSample{.base = to_vec3i(floored), .fraction = grid - floored};
   }
 
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE static std::array<
-      Corner, kTrilinearCornerCount>
-  trilinear_corners(const GridSample& sample) {
-    std::array<Corner, kTrilinearCornerCount> out{};
-    std::size_t corner_idx = 0;
-    for (int offset_z = 0; offset_z <= 1; ++offset_z) {
-      for (int offset_y = 0; offset_y <= 1; ++offset_y) {
-        for (int offset_x = 0; offset_x <= 1; ++offset_x) {
-          auto weight =
-              trilinear_weight(sample.fraction, offset_x, offset_y, offset_z);
-          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-          out[corner_idx++] = {.x = sample.base.x + offset_x,
-                               .y = sample.base.y + offset_y,
-                               .z = sample.base.z + offset_z,
-                               .weight = weight};
-        }
+  // All eight stencil corners lie inside the volume: one check replaces
+  // eight per-corner bounds tests.
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE bool is_interior(
+      const Vec3i& base) const {
+    const Size3 resolution = volume_.resolution();
+    return base.x >= 0 && base.y >= 0 && base.z >= 0 &&
+           static_cast<std::size_t>(base.x) + 1 < resolution.x &&
+           static_cast<std::size_t>(base.y) + 1 < resolution.y &&
+           static_cast<std::size_t>(base.z) + 1 < resolution.z;
+  }
+
+  // Interior corner accessor over the flat voxel array: base pointer plus
+  // precomputed strides, no per-corner bounds checks or index math.
+  template <typename VoxelT>
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE auto flat_corners(
+      VoxelT* voxels, const Vec3i& base) const {
+    const Size3 resolution = volume_.resolution();
+    const std::size_t stride_y = resolution.x;
+    const std::size_t stride_z = resolution.x * resolution.y;
+    const std::size_t base_index =
+        (((static_cast<std::size_t>(base.z) * resolution.y) +
+          static_cast<std::size_t>(base.y)) *
+         resolution.x) +
+        static_cast<std::size_t>(base.x);
+    // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    VoxelT* origin = voxels + base_index;
+    return
+        [origin, stride_y, stride_z](int offset_x, int offset_y, int offset_z) {
+          return origin + (static_cast<std::size_t>(offset_z) * stride_z) +
+                 (static_cast<std::size_t>(offset_y) * stride_y) +
+                 static_cast<std::size_t>(offset_x);
+        };
+    // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  }
+
+  // Weighted TSDF blend over the eight stencil corners; `corner_voxel`
+  // resolves a corner offset to a voxel (nullptr when out of bounds).
+  template <typename CornerVoxel>
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<float> blend_tsdf(
+      const Vec3f& fraction, CornerPolicy corner_policy,
+      const CornerVoxel& corner_voxel) const {
+    float accumulated = 0.0F;
+    float weight_sum = 0.0F;
+    int valid_corners = 0;
+    for_each_corner([&](int offset_x, int offset_y, int offset_z) {
+      const Voxel* voxel = corner_voxel(offset_x, offset_y, offset_z);
+      if (voxel == nullptr || voxel->weight <= 0.0F ||
+          !std::isfinite(voxel->distance)) {
+        return;
       }
+      const float weight =
+          trilinear_weight(fraction, offset_x, offset_y, offset_z);
+      accumulated += weight * voxel->distance;
+      weight_sum += weight;
+      ++valid_corners;
+    });
+
+    // kRequireAll rejects the sample unless every corner was observed;
+    // kSkipMissing keeps the contributing corners and reweights.
+    if (corner_policy == CornerPolicy::kRequireAll &&
+        valid_corners < kStencilCorners) {
+      return compat::nullopt;
     }
-    return out;
+    if (weight_sum <= kMinimumTrilinearWeightSum) {
+      return compat::nullopt;
+    }
+
+    const float distance = accumulated / weight_sum;
+    return std::isfinite(distance) ? compat::optional<float>{distance}
+                                   : compat::nullopt;
   }
 
-  // Bounds-checked corner lookups for trilinear sampling; nullptr when the
+  template <typename CornerVoxel>
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<Vec3f> blend_color(
+      const Vec3f& fraction, const CornerVoxel& corner_voxel) const {
+    Vec3f accumulated{};
+    float weight_sum = 0.0F;
+    for_each_corner([&](int offset_x, int offset_y, int offset_z) {
+      const ColorVoxel* voxel = corner_voxel(offset_x, offset_y, offset_z);
+      if (voxel == nullptr || voxel->weight <= 0.0F) {
+        return;
+      }
+      const float weight =
+          trilinear_weight(fraction, offset_x, offset_y, offset_z);
+      accumulated += weight * voxel->color;
+      weight_sum += weight;
+    });
+    if (weight_sum <= kMinimumTrilinearWeightSum) {
+      return compat::nullopt;
+    }
+    return accumulated / weight_sum;
+  }
+
+  // Bounds-checked corner lookups for the boundary shell; nullptr when the
   // corner lies outside the volume.
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Voxel* find_voxel(
-      const Corner& corner) const {
-    if (!in_bounds(corner.x, corner.y, corner.z)) {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE const Voxel* find_voxel(int x, int y,
+                                                                 int z) const {
+    if (!in_bounds(x, y, z)) {
       return nullptr;
     }
-    return &volume_.voxel_at(static_cast<std::size_t>(corner.x),
-                             static_cast<std::size_t>(corner.y),
-                             static_cast<std::size_t>(corner.z));
+    return &volume_.voxel_at(static_cast<std::size_t>(x),
+                             static_cast<std::size_t>(y),
+                             static_cast<std::size_t>(z));
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE const ColorVoxel* find_color_voxel(
-      const Corner& corner) const {
-    if (!in_bounds(corner.x, corner.y, corner.z)) {
+      int x, int y, int z) const {
+    if (!in_bounds(x, y, z)) {
       return nullptr;
     }
-    return &volume_.color_at(static_cast<std::size_t>(corner.x),
-                             static_cast<std::size_t>(corner.y),
-                             static_cast<std::size_t>(corner.z));
+    return &volume_.color_at(static_cast<std::size_t>(x),
+                             static_cast<std::size_t>(y),
+                             static_cast<std::size_t>(z));
   }
 
   ConstVolumeView<Space> volume_;
 };
 
 using HostVolumeSampler = VolumeSampler<MemorySpace::kHost>;
+
+// Trivial copy is required because samplers are passed into kernels by value.
+template <typename S>
+concept TsdfVolumeSampler =
+    std::is_trivially_copyable_v<S> &&
+    requires(const S sampler, const Vec3f& point, CornerPolicy policy) {
+      { sampler.voxel_size() } -> std::same_as<float>;
+      { sampler.truncation_distance() } -> std::same_as<float>;
+      { sampler.tsdf(point, policy) } -> std::same_as<compat::optional<float>>;
+      {
+        sampler.normal(point, policy)
+      } -> std::same_as<compat::optional<Vec3f>>;
+      { sampler.color(point) } -> std::same_as<compat::optional<Vec3f>>;
+    };
+
+static_assert(TsdfVolumeSampler<HostVolumeSampler>);
 
 }  // namespace kinectfusion
 

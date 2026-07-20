@@ -25,6 +25,7 @@ inline constexpr float kDefaultVoxelSizeMeters = 0.01F;
 inline constexpr float kDefaultTruncationDistanceMeters = 0.05F;
 inline constexpr float kDefaultVolumeCameraMarginMeters = 2.56F;
 inline constexpr int kDefaultFixedIcpIterationsDisabled = -1;
+inline constexpr float kDefaultMeshMinWeight = 2.0F;
 
 // Command-line configuration for the reconstruction app. Holds the raw user
 // inputs and knows how to turn them into the library option structs.
@@ -74,6 +75,8 @@ struct AppOptions {
   std::filesystem::path output_dir{"kinectfusion_output"};
   bool write_raycast_images{true};
   bool write_point_clouds{true};
+  bool write_mesh{true};
+  float mesh_min_weight{kDefaultMeshMinWeight};
   bool raycast_tsdf_from_valid_corners{false};
   bool cell_gradient_normals{false};
   bool raycast_seed_previous{false};

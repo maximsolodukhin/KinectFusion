@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
@@ -72,6 +73,11 @@ class Pipeline {
   // If on GPU - copied, if not - viewed directly.
   [[nodiscard]] virtual ConstHostVolumeView host_view(
       std::optional<HostVolume>& staging) const = 0;
+
+  // Meshes the volume on the host. Sparse pipelines sweep only allocated
+  // blocks, so large volumes mesh without a dense staging copy.
+  [[nodiscard]] virtual MarchingCubes::Mesh extract_mesh(
+      float min_weight) const = 0;
 
   [[nodiscard]] const std::string& name() const { return name_; }
 

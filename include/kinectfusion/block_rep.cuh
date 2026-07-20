@@ -53,6 +53,8 @@ class BlockRep<MemorySpace::kDevice, GeomVoxel, Color> {
   [[nodiscard]] ConstHostVolumeView host_dense_view(
       std::optional<HostVolume>& staging) const;
 
+  [[nodiscard]] SparseVolumeSnapshot<GeomVoxel, Color> host_snapshot() const;
+
  private:
   VolumeGeometry geometry_;
   BlockGrid blocks_;

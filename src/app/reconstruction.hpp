@@ -40,6 +40,8 @@ class Reconstruction {
   void render_model_outputs();
   void log_pipelines() const;
   void write_trajectory() const;
+  // Extracts and writes one mesh.ply per pipeline (marching cubes).
+  void write_meshes() const;
   void log_frame_loaded() const;
 
   AppOptions options_;

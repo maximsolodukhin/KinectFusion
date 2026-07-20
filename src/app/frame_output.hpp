@@ -5,6 +5,7 @@
 #include <deque>
 #include <filesystem>
 #include <future>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/volume.hpp>
 #include <string>
@@ -40,6 +41,11 @@ class FrameOutput {
   void append_ablation_stats(
       int frame_index,
       const std::vector<kinectfusion::PipelineComparison>& comparisons);
+
+  // Writes output_dir / subdirectory / mesh.ply. Synchronous: runs once at
+  // the end of a run.
+  void write_mesh(const kinectfusion::MarchingCubes::Mesh& mesh,
+                  const std::string& subdirectory = {}) const;
 
  private:
   [[nodiscard]] static std::string frame_prefix(int frame_index);

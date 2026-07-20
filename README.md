@@ -28,10 +28,17 @@ This repo expects it in the `data/` folder at the project root, e.g.
   --output-dir outputs
 ```
 
-This writes one raycast render per frame to `outputs/`:
+This writes one raycast render per frame to `outputs/`, plus one mesh at the
+end of the run:
 
 - `frame_XXXXXX_raycast.png` — color raycast of the fused TSDF surface
 - `frame_XXXXXX_raycast.ply` — surface point cloud (position + normal + color)
+- `mesh.ply` — triangle mesh of the whole fused TSDF surface (marching
+  cubes; welded vertices with normals and colors). `--mesh-min-weight`
+  removes low-confidence cells: a higher value needs more agreeing
+  observations and gives a cleaner mesh. Sparse volumes mesh block by
+  block, so large resolutions (for example 2048) export without a dense
+  copy.
 
 Single frame only (just integrate + raycast, no tracking):
 
@@ -54,6 +61,8 @@ Single frame only (just integrate + raycast, no tracking):
 | `--output-dir`              | `kinectfusion_output`                | Output directory                          |
 | `--no-write-raycast-images` | —                                    | Skip PNG output                           |
 | `--no-write-point-clouds`   | —                                    | Skip PLY output                           |
+| `--no-write-mesh`           | —                                    | Skip the final mesh.ply                   |
+| `--mesh-min-weight`         | `2`                                  | Minimum TSDF weight for meshed cells      |
 
 `./build/release/src/app/kinectfusion --help` lists everything.
 
@@ -189,7 +198,8 @@ Per-frame deviation statistics against the reference are logged and appended to
 `<output-dir>/ablation_stats.csv` (truncated at the start of each run). The
 reference pipeline writes its raycasts to `<output-dir>/` every frame; the
 other pipelines write theirs to `<output-dir>/<pipeline-name>/` on comparison
-frames.
+frames. At the end of the run each pipeline also writes its own `mesh.ply`,
+so you can compare mesh quality across voxel storages.
 
 The TOML file has two optional top-level keys and one `[[pipeline]]` table per
 pipeline. See `configs/ablation_example.toml` for a commented example, and

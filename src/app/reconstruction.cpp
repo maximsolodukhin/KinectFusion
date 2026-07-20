@@ -15,8 +15,11 @@
 #include <iostream>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
+#include <kinectfusion/volume.hpp>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <variant>
@@ -58,6 +61,9 @@ int Reconstruction::run() {
       std::chrono::steady_clock::now() - loop_start;
 
   write_trajectory();
+  if (options_.write_mesh) {
+    write_meshes();
+  }
   log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
            processed_frames_, pipelines_.reference().observed_voxel_count());
   if (processed_frames_ > 0 && loop_seconds.count() > 0.0) {
@@ -296,6 +302,18 @@ void Reconstruction::write_trajectory() const {
   }
   log_info("Wrote {} trajectory poses to {}", trajectory_.size(),
            path.string());
+}
+
+void Reconstruction::write_meshes() const {
+  const std::string reference_name = pipelines_.reference().name();
+  for (const auto& member : pipelines_.members()) {
+    const auto mesh = member.pipeline->extract_mesh(options_.mesh_min_weight);
+    const bool is_reference = member.pipeline->name() == reference_name;
+    frame_output_.write_mesh(mesh, is_reference ? "" : member.pipeline->name());
+    log_info("Pipeline '{}' mesh: {} vertices, {} triangles",
+             member.pipeline->name(), mesh.positions.size(),
+             mesh.triangles.size());
+  }
 }
 
 void Reconstruction::log_frame_loaded() const {

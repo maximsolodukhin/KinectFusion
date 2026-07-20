@@ -4,16 +4,19 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <kinectfusion/block_rep.hpp>
 #include <kinectfusion/comparison.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/grid.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/occupancy.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
@@ -22,9 +25,12 @@
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_representation.hpp>
 #include <numbers>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -276,6 +282,140 @@ TEST_CASE("Set-bit enumeration visits exactly the set bits", "[grid]") {
   kinectfusion::BlockBitmapOps::for_each_set_bit(
       0b1010'0001U, 64, [&](std::size_t index) { visited.push_back(index); });
   REQUIRE(visited == std::vector<std::size_t>{64, 69, 71});
+}
+
+TEST_CASE("Marching cubes meshes a synthetic sphere", "[mesh]") {
+  const auto geometry = synthetic_volume_geometry();
+  kinectfusion::HostVolume volume{geometry};
+  const float extent =
+      static_cast<float>(geometry.resolution.x) * geometry.voxel_size;
+  const kinectfusion::Vec3f center =
+      geometry.origin + kinectfusion::make_vec3f(0.5F, 0.5F, 0.5F) * extent;
+  const float radius = 0.3F * extent;
+
+  const auto view = volume.view();
+  for (const auto [x, y, z] : kinectfusion::GridIndices{geometry.resolution}) {
+    const float distance =
+        kinectfusion::norm(geometry.cell_center(x, y, z) - center) - radius;
+    view.voxel_at(x, y, z) = kinectfusion::Voxel{
+        .distance =
+            std::clamp(distance / geometry.truncation_distance, -1.0F, 1.0F),
+        .weight = 1.0F};
+  }
+
+  const auto mesh = kinectfusion::MarchingCubes::extract(volume.view());
+  REQUIRE_FALSE(mesh.positions.empty());
+  REQUIRE_FALSE(mesh.triangles.empty());
+  REQUIRE(mesh.normals.size() == mesh.positions.size());
+  REQUIRE(mesh.colors.size() == mesh.positions.size());
+
+  for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+    const kinectfusion::Vec3f radial = mesh.positions[i] - center;
+    // Vertices lie on the sphere, and gradient normals point outward.
+    REQUIRE(std::abs(kinectfusion::norm(radial) - radius) <
+            geometry.voxel_size);
+    REQUIRE(kinectfusion::dot(mesh.normals[i], radial) > 0.0F);
+  }
+
+  // Consistent outward winding.
+  for (const auto& triangle : mesh.triangles) {
+    for (const std::uint32_t index : triangle) {
+      REQUIRE(index < mesh.positions.size());
+    }
+    const kinectfusion::Vec3f face = kinectfusion::cross(
+        mesh.positions[triangle[1]] - mesh.positions[triangle[0]],
+        mesh.positions[triangle[2]] - mesh.positions[triangle[0]]);
+    const kinectfusion::Vec3f centroid =
+        (mesh.positions[triangle[0]] + mesh.positions[triangle[1]] +
+         mesh.positions[triangle[2]]) /
+        3.0F;
+    REQUIRE(kinectfusion::dot(face, centroid - center) > 0.0F);
+  }
+
+  // Welded closed surface: every edge is shared by exactly two triangles,
+  // and the Euler characteristic of a sphere is 2.
+  std::unordered_map<std::uint64_t, int> edge_uses;
+  for (const auto& triangle : mesh.triangles) {
+    for (std::size_t corner = 0; corner < 3; ++corner) {
+      const std::uint64_t head = triangle.at(corner);
+      const std::uint64_t tail = triangle.at((corner + 1) % 3);
+      edge_uses[(std::min(head, tail) << 32U) | std::max(head, tail)] += 1;
+    }
+  }
+  for (const auto& [edge, uses] : edge_uses) {
+    REQUIRE(uses == 2);
+  }
+  const auto vertex_count = static_cast<std::ptrdiff_t>(mesh.positions.size());
+  const auto edge_count = static_cast<std::ptrdiff_t>(edge_uses.size());
+  const auto face_count = static_cast<std::ptrdiff_t>(mesh.triangles.size());
+  REQUIRE(vertex_count - edge_count + face_count == 2);
+}
+
+TEST_CASE("Marching cubes meshes an integrated depth plane", "[mesh]") {
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+  kinectfusion::HostVolume volume{synthetic_volume_geometry()};
+  const kinectfusion::TsdfIntegrator integrator{};
+  integrator.integrate(volume.view(),
+                       {.depth = &depth, .intrinsics = synthetic_intrinsics()});
+
+  const auto mesh = kinectfusion::MarchingCubes::extract(volume.view());
+  REQUIRE_FALSE(mesh.triangles.empty());
+  for (const auto& position : mesh.positions) {
+    // The plane lies at 1 m depth.
+    REQUIRE(std::abs(position.z - 1.0F) < kSyntheticVoxelSize);
+  }
+}
+
+TEST_CASE("Marching cubes of an unobserved volume is empty", "[mesh]") {
+  const kinectfusion::HostVolume volume{synthetic_volume_geometry()};
+  const auto mesh = kinectfusion::MarchingCubes::extract(volume.view());
+  REQUIRE(mesh.positions.empty());
+  REQUIRE(mesh.triangles.empty());
+}
+
+TEST_CASE("Sparse marching cubes matches the dense band mesh", "[mesh]") {
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+  const auto geometry = synthetic_volume_geometry();
+  const kinectfusion::TsdfIntegrationOptions options{
+      .mode = kinectfusion::IntegrationMode::kBand};
+  const kinectfusion::TsdfRuleVariant rule = kinectfusion::AngleWeightedTsdf{};
+  const kinectfusion::DepthFrame frame{.depth = &depth,
+                                       .intrinsics = synthetic_intrinsics()};
+
+  kinectfusion::HostBlockRep sparse{geometry};
+  sparse.integrate(frame.view(), options, rule);
+  kinectfusion::DenseRep<kinectfusion::MemorySpace::kHost> dense{geometry};
+  dense.integrate(frame.view(), options, rule);
+
+  auto sparse_mesh = kinectfusion::MarchingCubes::extract(sparse.view());
+  auto dense_mesh = kinectfusion::MarchingCubes::extract(dense.view());
+
+  REQUIRE_FALSE(sparse_mesh.triangles.empty());
+  REQUIRE(sparse_mesh.triangles.size() == dense_mesh.triangles.size());
+  REQUIRE(sparse_mesh.positions.size() == dense_mesh.positions.size());
+
+  const auto sorted = [](std::vector<kinectfusion::Vec3f> positions) {
+    std::ranges::sort(positions, [](const auto& lhs, const auto& rhs) {
+      return std::tie(lhs.x, lhs.y, lhs.z) < std::tie(rhs.x, rhs.y, rhs.z);
+    });
+    return positions;
+  };
+  REQUIRE(sorted(sparse_mesh.positions) == sorted(dense_mesh.positions));
+}
+
+TEST_CASE("Marching cubes drops cells below the weight threshold", "[mesh]") {
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+  kinectfusion::HostVolume volume{synthetic_volume_geometry()};
+  const kinectfusion::TsdfIntegrator integrator{};
+  integrator.integrate(volume.view(),
+                       {.depth = &depth, .intrinsics = synthetic_intrinsics()});
+
+  // One integrated frame leaves every weight at most 1: a threshold of 2
+  // must reject everything, a threshold of 1 must keep the plane.
+  REQUIRE(kinectfusion::MarchingCubes::extract(volume.view(), 2.0F)
+              .triangles.empty());
+  REQUIRE_FALSE(kinectfusion::MarchingCubes::extract(volume.view(), 1.0F)
+                    .triangles.empty());
 }
 
 TEST_CASE("Volume integrates and raycasts a synthetic depth plane",

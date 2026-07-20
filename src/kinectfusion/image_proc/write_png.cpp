@@ -38,14 +38,16 @@ void write_png(const ColorImage& image, const std::string& filename) {
         "Failed to set PNG compression level");
   check(spng_set_option(ctx.get(), SPNG_FILTER_CHOICE, SPNG_DISABLE_FILTERING),
         "Failed to set PNG filter choice");
-  // Saves time, but produces larger files. The default is 6, which is slower but smaller.
-  // Who cares? We're benchmarking the kinectfusion pipeline, not spng library.
+  // Saves time, but produces larger files. The default is 6, which is slower
+  // but smaller. Who cares? We're benchmarking the kinectfusion pipeline, not
+  // spng library.
 
   spng_ihdr ihdr{};
   ihdr.width = static_cast<std::uint32_t>(image.width());
   ihdr.height = static_cast<std::uint32_t>(image.height());
   ihdr.bit_depth = kPngBitDepth;
   ihdr.color_type = static_cast<std::uint8_t>(SPNG_COLOR_TYPE_TRUECOLOR_ALPHA);
+
   check(spng_set_ihdr(ctx.get(), &ihdr), "Failed to set PNG header");
 
   const std::size_t length =

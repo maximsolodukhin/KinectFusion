@@ -1,9 +1,7 @@
-#include <kinectfusion/grid.hpp>
-#include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/validation.hpp>
-#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_sampler.hpp>
 
 namespace kinectfusion {
 
@@ -11,21 +9,7 @@ Raycaster::Raycaster(RaycastOptions options) : options_(validated(options)) {}
 
 SurfaceMaps Raycaster::raycast(ConstHostVolumeView volume,
                                const RaycastCamera& camera) const {
-  validate_camera(camera);
-  using Vec3fImg = image_proc::Vector3fImage;
-  using ColorImg = image_proc::ColorImage;
-  SurfaceMaps maps{
-      .points = Vec3fImg{camera.width, camera.height, invalid_vec3f()},
-      .normals = Vec3fImg{camera.width, camera.height, invalid_vec3f()},
-      .colors = ColorImg{camera.width, camera.height}};
-
-  const auto raycast =
-      HostSurfaceRaycast::from_camera(volume, options_, camera);
-  const HostSurfaceMapsView maps_view = view(maps);
-  for (const auto [col, row] : PixelIndices{camera.width, camera.height}) {
-    raycast.render_pixel(maps_view, col, row);
-  }
-  return maps;
+  return render(HostVolumeSampler{volume}, camera);
 }
 
 RaycastOptions Raycaster::validated(RaycastOptions options) {

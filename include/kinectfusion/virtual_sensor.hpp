@@ -28,6 +28,8 @@ class VirtualSensor {
   [[nodiscard]] const image_proc::ColorImage& color_image() const;
   [[nodiscard]] CameraIntrinsics depth_intrinsics() const;
   [[nodiscard]] int current_frame_index() const;
+  // TUM depth timestamp of the current frame, for trajectory evaluation.
+  [[nodiscard]] double current_timestamp() const;
 
  private:
   struct FrameImages {
@@ -38,7 +40,8 @@ class VirtualSensor {
   static constexpr std::size_t kPrefetchDepth = 4;
 
   [[nodiscard]] static bool read_index(const std::filesystem::path& path,
-                                       std::vector<std::string>& out);
+                                       std::vector<std::string>& out,
+                                       std::vector<double>* timestamps);
   [[nodiscard]] FrameImages decode_frame(std::size_t index) const;
   void schedule_prefetch();
   void preload_all();
@@ -46,6 +49,7 @@ class VirtualSensor {
   std::filesystem::path base_dir_;
   std::vector<std::string> depth_files_;
   std::vector<std::string> color_files_;
+  std::vector<double> depth_timestamps_;
   image_proc::DepthImage depth_image_;
   image_proc::ColorImage color_image_;
   CameraIntrinsics depth_intrinsics_{};

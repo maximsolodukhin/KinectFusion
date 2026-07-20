@@ -3,16 +3,21 @@
 #include <spdlog/spdlog.h>
 
 // Eigen/Core declares MatrixBase::inverse(); Eigen/LU defines it.
+#include <Eigen/Geometry>
 #include <Eigen/LU>  // NOLINT(misc-include-cleaner)
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
+#include <system_error>
 #include <utility>
 #include <variant>
 
@@ -52,6 +57,7 @@ int Reconstruction::run() {
   const std::chrono::duration<double> loop_seconds =
       std::chrono::steady_clock::now() - loop_start;
 
+  write_trajectory();
   log_info("Finished reconstruction: processed_frames={} observed_voxels={}",
            processed_frames_, pipelines_.reference().observed_voxel_count());
   if (processed_frames_ > 0 && loop_seconds.count() > 0.0) {
@@ -100,6 +106,7 @@ bool Reconstruction::initialize() {
 
   log_info("Initialized reconstruction from frame 0: observed voxels={}",
            pipelines_.reference().observed_voxel_count());
+  trajectory_.emplace_back(sensor_.current_timestamp(), camera_to_world_);
 
   return true;
 }
@@ -123,6 +130,7 @@ void Reconstruction::process_frame() {
   } else {
     relocalize(tracking);
   }
+  trajectory_.emplace_back(sensor_.current_timestamp(), camera_to_world_);
   ++processed_frames_;
 }
 
@@ -265,6 +273,29 @@ void Reconstruction::log_pipelines() const {
                member.fallback_reason);
     }
   }
+}
+
+// TUM trajectory format (timestamp tx ty tz qx qy qz qw), evaluated against
+// the dataset groundtruth by scripts/evaluate_ate.py.
+void Reconstruction::write_trajectory() const {
+  const auto path = options_.output_dir / "trajectory.txt";
+  std::error_code create_error;
+  std::filesystem::create_directories(options_.output_dir, create_error);
+  std::ofstream file{path};
+  if (!file) {
+    log_warn("Could not write trajectory to {}", path.string());
+    return;
+  }
+  constexpr int kTimestampPrecision = 9;
+  file << std::setprecision(kTimestampPrecision);
+  for (const auto& [timestamp, pose] : trajectory_) {
+    const Eigen::Quaternionf rotation{Eigen::Matrix3f{pose.block<3, 3>(0, 0)}};
+    file << std::fixed << timestamp << ' ' << pose(0, 3) << ' ' << pose(1, 3)
+         << ' ' << pose(2, 3) << ' ' << rotation.x() << ' ' << rotation.y()
+         << ' ' << rotation.z() << ' ' << rotation.w() << '\n';
+  }
+  log_info("Wrote {} trajectory poses to {}", trajectory_.size(),
+           path.string());
 }
 
 void Reconstruction::log_frame_loaded() const {

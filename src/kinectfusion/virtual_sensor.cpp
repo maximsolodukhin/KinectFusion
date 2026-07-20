@@ -41,19 +41,20 @@ constexpr CameraIntrinsics kTumFreiburg3Depth{
 bool VirtualSensor::init(const std::filesystem::path& dataset_dir,
                          bool preload) {
   base_dir_ = dataset_dir;
-  if (!read_index(dataset_dir / "depth.txt", depth_files_)) {
+  if (!read_index(dataset_dir / "depth.txt", depth_files_,
+                  &depth_timestamps_)) {
     return false;
   }
-  if (!read_index(dataset_dir / "rgb.txt", color_files_)) {
+  if (!read_index(dataset_dir / "rgb.txt", color_files_, nullptr)) {
     return false;
   }
-  
+
   depth_intrinsics_ = tum_depth_intrinsics(dataset_dir);
   current_index_ = -1;
-  
+
   prefetched_.clear();
   next_frame_index_ = 0;
-  
+
   preloaded_.clear();
   preload_ = preload;
 
@@ -102,6 +103,7 @@ VirtualSensor::FrameImages VirtualSensor::decode_frame(
           .color = read_png<ColorImage>(cpath.string())};
 }
 
+// can be done less ugly with a thread pool, but this is good enough for now
 void VirtualSensor::schedule_prefetch() {
   const std::size_t frame_count =
       std::min(depth_files_.size(), color_files_.size());
@@ -110,6 +112,7 @@ void VirtualSensor::schedule_prefetch() {
     prefetched_.push_back(std::async(
         std::launch::async,
         [this, index = next_frame_index_] { return decode_frame(index); }));
+
     ++next_frame_index_;
   }
 }
@@ -157,8 +160,17 @@ CameraIntrinsics VirtualSensor::depth_intrinsics() const {
 
 int VirtualSensor::current_frame_index() const { return current_index_; }
 
+double VirtualSensor::current_timestamp() const {
+  if (current_index_ < 0 ||
+      static_cast<std::size_t>(current_index_) >= depth_timestamps_.size()) {
+    return 0.0;
+  }
+  return depth_timestamps_[static_cast<std::size_t>(current_index_)];
+}
+
 bool VirtualSensor::read_index(const std::filesystem::path& path,
-                               std::vector<std::string>& out) {
+                               std::vector<std::string>& out,
+                               std::vector<double>* timestamps) {
   std::ifstream file{path};
   if (!file) {
     return false;
@@ -172,6 +184,9 @@ bool VirtualSensor::read_index(const std::filesystem::path& path,
   std::string relative_path;
   while (file >> timestamp >> relative_path) {
     out.push_back(relative_path);
+    if (timestamps != nullptr) {
+      timestamps->push_back(timestamp);
+    }
   }
   return true;
 }

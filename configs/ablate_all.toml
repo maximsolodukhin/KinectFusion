@@ -1,0 +1,97 @@
+# One pipeline for each parameter the pipeline set can ablate. Every
+# pipeline changes one parameter against the "baseline" reference.
+#
+# Run (256^3 fits all pipelines in GPU memory; the margin must shrink with
+# the volume, see README):
+#   kinectfusion <dataset> --pipelines configs/ablate_all.toml \
+#     --volume-resolution 256 --volume-camera-margin 0.5 \
+#     --space cuda --compare-every 10 --output-dir outputs
+#
+# The deviation statistics land in <output-dir>/ablation_stats.csv.
+# Expected: "bitmap-march" compares equal to the baseline, bit for bit.
+#
+# Some switches are global CLI flags, not pipeline keys. Ablate them with
+# separate runs:
+#   --cell-normals --raycast-seed-previous --raycast-tsdf-from-valid-corners
+#   --icp-device-solve --icp-capture-graph
+# Example: kinectfusion <dataset> --cell-normals ...
+#
+# The volume geometry is also global: all pipelines of a set share one grid.
+
+reference = "baseline"
+compare-every-n-frames = 10
+
+[[pipeline]]
+name = "baseline"
+
+# --- TSDF update rule ---
+
+[[pipeline]]
+name = "classic"
+tsdf-variant = "classic"
+
+[[pipeline]]
+name = "no-projective"
+projective-distance = false
+
+[[pipeline]]
+name = "scaled-truncation"
+distance-scaled-truncation = true
+truncation-distance-scale = 0.01
+
+[[pipeline]]
+name = "observation-weight-4"
+observation-weight = 4.0
+
+[[pipeline]]
+name = "max-weight-32"
+max-weight = 32.0
+
+# --- Voxel and color storage ---
+
+[[pipeline]]
+name = "quantized"
+voxel = "quantized"
+
+[[pipeline]]
+name = "bf16"
+voxel = "bf16"
+
+[[pipeline]]
+name = "no-color"
+color = "none"
+
+# --- Integration sweep and volume layout ---
+
+[[pipeline]]
+name = "band"
+integration = "band"
+
+[[pipeline]]
+name = "sparse"
+storage = "sparse"
+integration = "band"
+
+# Small pool: shows the overflow behavior (blocks past the pool are dropped).
+[[pipeline]]
+name = "sparse-tiny"
+storage = "sparse"
+integration = "band"
+sparse-capacity = 1024
+
+# --- Raycast backend ---
+
+[[pipeline]]
+name = "bitmap-march"
+raycast = "bitmap-march"
+
+[[pipeline]]
+name = "band-march"
+raycast = "band-march"
+
+# --- Memory space ---
+# A cpu pipeline compares the host and device float paths, but it makes the
+# whole run as slow as the cpu. Enable it only for short runs.
+# [[pipeline]]
+# name = "cpu"
+# space = "cpu"

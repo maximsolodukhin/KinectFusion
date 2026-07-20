@@ -45,12 +45,13 @@ add_test(
 add_test(NAME cli.version_matches COMMAND $<TARGET_FILE:kinectfusion_app> --version)
 set_tests_properties(cli.version_matches PROPERTIES PASS_REGULAR_EXPRESSION "${kinectfusion_VERSION}")
 
-add_executable(tests tests.cpp type_assertions.cpp)
+add_executable(tests tests.cpp type_assertions.cpp app_config_tests.cpp)
 target_link_libraries(
   tests
   PRIVATE kinectfusion::kinectfusion_warnings
           kinectfusion::kinectfusion_options
           kinectfusion::kinectfusion
+          kinectfusion_app_config
           Catch2::Catch2WithMain)
 
 kinectfusion_configure_linker(tests)

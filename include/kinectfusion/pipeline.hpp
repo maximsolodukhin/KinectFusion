@@ -2,6 +2,7 @@
 #define KINECTFUSION_INCLUDE_KINECTFUSION_PIPELINE_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/raycasting.hpp>
@@ -15,6 +16,13 @@
 
 namespace kinectfusion {
 
+// Selects the registered storage combination of a pipeline. Pipeline::create
+// maps the values to compile-time representations. RaycastBackend lives in
+// raycasting.hpp.
+enum class VoxelStore : std::uint8_t { kFloat, kQuantized, kBf16 };
+enum class ColorStore : std::uint8_t { kFloat, kNone };
+enum class StorageLayout : std::uint8_t { kDense, kSparse };
+
 // Everything needed to compose one reconstruction pipeline
 struct PipelineConfig {
   std::string name;
@@ -23,6 +31,11 @@ struct PipelineConfig {
   TsdfIntegrationOptions integration{};
   RaycastOptions raycast{};
   VolumeGeometry volume{};
+  VoxelStore voxel{VoxelStore::kFloat};
+  ColorStore color{ColorStore::kFloat};
+  RaycastBackend raycast_backend{RaycastBackend::kMarch};
+  StorageLayout storage{StorageLayout::kDense};
+  std::size_t sparse_block_capacity{0};  // 0 = block_count / 4
 };
 
 using TrackingSurfacesVariant =
@@ -73,6 +86,31 @@ class Pipeline {
   // Warn-and-fallback factory: an unavailable memory space reports a reason
   // instead of throwing; misconfiguration throws std::invalid_argument.
   [[nodiscard]] static Creation create(const PipelineConfig& config);
+
+  // Maps the configured storage enums to the registered compile-time types:
+  // pick.operator()<GeomVoxel, Color>() runs for the selected combination.
+  template <typename Pick>
+  [[nodiscard]] static auto visit_storage(const PipelineConfig& config,
+                                          const Pick& pick) {
+    const auto with_color = [&]<typename Color>() {
+      switch (config.voxel) {
+        case VoxelStore::kQuantized:
+          return pick.template operator()<QuantizedVoxel, Color>();
+        case VoxelStore::kBf16:
+          return pick.template operator()<Bf16Voxel, Color>();
+        case VoxelStore::kFloat:
+        default:
+          return pick.template operator()<Voxel, Color>();
+      }
+    };
+    if (config.color == ColorStore::kNone) {
+      return with_color.template operator()<NoColorFacet>();
+    }
+    return with_color.template operator()<FloatColorFacet>();
+  }
+
+  // Throws std::invalid_argument on unsupported storage combinations.
+  static void require_valid_storage(const PipelineConfig& config);
 
  protected:
   explicit Pipeline(std::string name);

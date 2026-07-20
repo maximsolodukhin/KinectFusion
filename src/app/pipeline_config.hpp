@@ -28,6 +28,16 @@ memory_space_names();
     std::string_view name);
 [[nodiscard]] std::string_view memory_space_name(
     kinectfusion::MemorySpace space);
+[[nodiscard]] kinectfusion::VoxelStore voxel_store_from_name(
+    std::string_view name);
+[[nodiscard]] kinectfusion::ColorStore color_store_from_name(
+    std::string_view name);
+[[nodiscard]] kinectfusion::RaycastBackend raycast_backend_from_name(
+    std::string_view name);
+[[nodiscard]] kinectfusion::IntegrationMode integration_mode_from_name(
+    std::string_view name);
+[[nodiscard]] kinectfusion::StorageLayout storage_layout_from_name(
+    std::string_view name);
 
 // File format: README "Ablation pipelines". Throws std::invalid_argument on
 // malformed input or unknown keys.

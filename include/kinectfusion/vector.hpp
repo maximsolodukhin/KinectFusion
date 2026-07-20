@@ -39,6 +39,39 @@ struct Size3 {
   std::size_t y{};
   std::size_t z{};
 
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE bool contains(
+      const Vec3f& point) const {
+    return point.x >= 0.0F && point.y >= 0.0F && point.z >= 0.0F &&
+           point.x < static_cast<float>(x) && point.y < static_cast<float>(y) &&
+           point.z < static_cast<float>(z);
+  }
+
+  template <typename Scalar>
+    requires(std::is_integral_v<Scalar> && std::is_signed_v<Scalar>)
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE bool contains(
+      Scalar column, Scalar row, Scalar layer) const {
+    return column >= Scalar{0} && row >= Scalar{0} && layer >= Scalar{0} &&
+           static_cast<std::size_t>(column) < x &&
+           static_cast<std::size_t>(row) < y &&
+           static_cast<std::size_t>(layer) < z;
+  }
+
+  // x-major flat index of (column, row, layer). Precondition: contains it.
+  template <typename Scalar>
+    requires std::is_integral_v<Scalar>
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE std::size_t flatten(
+      Scalar column, Scalar row, Scalar layer) const {
+    return (((static_cast<std::size_t>(layer) * y) +
+             static_cast<std::size_t>(row)) *
+            x) +
+           static_cast<std::size_t>(column);
+  }
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Size3
+  unflatten(std::size_t flat) const {
+    return {.x = flat % x, .y = (flat / x) % y, .z = flat / (x * y)};
+  }
+
   friend bool operator==(const Size3&, const Size3&) = default;
 };
 
@@ -130,8 +163,14 @@ KINECTFUSION_FORCEINLINE_DEVICE constexpr Vec3f& operator+=(Vec3f& lhs,
 
 [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE Vec3f
 normalized(const Vec3f value) {
+#ifdef __CUDA_ARCH__
+  // rsqrt plus multiply avoids the slow sqrt and divide macro sequences.
+  const float squared = squared_norm(value);
+  return squared > 0.0F ? value * rsqrtf(squared) : zero_vec3f();
+#else
   const float length = norm(value);
   return length > 0.0F ? value / length : zero_vec3f();
+#endif
 }
 
 // Angle between two directions in radians, in [0, pi]. atan2 over
@@ -171,6 +210,18 @@ struct RigidTransform {
             .translation = {}};
   }
 };
+
+// Rigid inverse: {R^T, -R^T t}.
+[[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr RigidTransform inverse(
+    const RigidTransform& transform) {
+  const Mat3f& rot = transform.rotation;
+  const Mat3f transposed{
+      .row_x = make_vec3f(rot.row_x.x, rot.row_y.x, rot.row_z.x),
+      .row_y = make_vec3f(rot.row_x.y, rot.row_y.y, rot.row_z.y),
+      .row_z = make_vec3f(rot.row_x.z, rot.row_y.z, rot.row_z.z)};
+  return {.rotation = transposed,
+          .translation = -(transposed * transform.translation)};
+}
 
 [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE constexpr Vec3f operator*(
     const RigidTransform& transform, const Vec3f& point) {

@@ -11,6 +11,8 @@
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
@@ -37,6 +39,7 @@ class Reconstruction {
   [[nodiscard]] std::size_t build_pyramid();
   void render_model_outputs();
   void log_pipelines() const;
+  void write_trajectory() const;
   void log_frame_loaded() const;
 
   AppOptions options_;
@@ -46,6 +49,9 @@ class Reconstruction {
   std::unique_ptr<kinectfusion::PyramidSource> pyramid_source_;
   kinectfusion::PipelineSet pipelines_;
   Eigen::Matrix4f camera_to_world_{Eigen::Matrix4f::Identity()};
+  // (TUM timestamp, camera_to_world) per processed frame, written as
+  // trajectory.txt for groundtruth ATE/RPE evaluation.
+  std::vector<std::pair<double, Eigen::Matrix4f>> trajectory_;
   int processed_frames_{1};
   bool relocalizing_{false};
   int relocalization_frames_{0};

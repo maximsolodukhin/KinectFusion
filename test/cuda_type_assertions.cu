@@ -3,6 +3,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/block_rep.cuh>
 #include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/depth_processing.cuh>
@@ -12,6 +13,7 @@
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/image_proc/device_image.cuh>
 #include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/occupancy.cuh>
 #include <kinectfusion/raycasting.cuh>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/rgbd.hpp>
@@ -20,6 +22,7 @@
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_representation.hpp>
 #include <kinectfusion/volume_sampler.hpp>
 #include <type_traits>
 #include <utility>
@@ -56,6 +59,18 @@ static_assert(
 // Mutable views convert to read-only views, like std::span.
 static_assert(std::convertible_to<DeviceImageView<std::uint16_t>,
                                   DeviceImageView<const std::uint16_t>>);
+
+// The device views model the same grid contracts as the host views. The
+// sparse view stays outside the flat refinement.
+static_assert(kinectfusion::DenseVoxelGridView<kinectfusion::DeviceVolumeView>);
+static_assert(
+    kinectfusion::DenseVoxelGridView<kinectfusion::ConstDeviceVolumeView>);
+static_assert(kinectfusion::VoxelGridView<
+              kinectfusion::SparseVolumeView<MemorySpace::kDevice>>);
+static_assert(!kinectfusion::DenseVoxelGridView<
+              kinectfusion::SparseVolumeView<MemorySpace::kDevice>>);
+static_assert(kinectfusion::PixelRenderer<kinectfusion::DeviceSurfaceRaycast,
+                                          MemorySpace::kDevice>);
 
 // A device image refills only from a same-pixel view; either space, since
 // frames arrive from a host upload or a device pyramid.
@@ -124,7 +139,26 @@ static_assert(std::is_trivially_copyable_v<
               kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
 static_assert(kinectfusion::TsdfVolumeSampler<
               kinectfusion::VolumeSampler<MemorySpace::kDevice>>);
+
+// The device dense representation models the storage contract, and each
+// registered storage combination keeps a kernel-safe sampler.
+static_assert(kinectfusion::VolumeRepresentation<kinectfusion::DeviceDenseRep,
+                                                 MemorySpace::kDevice>);
+using QuantizedVoxel = kinectfusion::BasicVoxel<kinectfusion::QuantizedTsdf,
+                                                kinectfusion::QuantizedWeight>;
+static_assert(
+    kinectfusion::TsdfVolumeSampler<
+        kinectfusion::VolumeSampler<MemorySpace::kDevice, QuantizedVoxel>>);
+static_assert(
+    std::is_trivially_copyable_v<kinectfusion::VolumeSampler<
+        MemorySpace::kDevice, QuantizedVoxel, kinectfusion::NoColorFacet>>);
+static_assert(kinectfusion::TsdfVolumeSampler<kinectfusion::VolumeSampler<
+                  MemorySpace::kDevice, kinectfusion::Bf16Voxel>>);
 static_assert(std::is_trivially_copyable_v<kinectfusion::DeviceSurfaceRaycast>);
+static_assert(
+    std::is_trivially_copyable_v<kinectfusion::SurfaceRaycast<
+        MemorySpace::kDevice, kinectfusion::VolumeSampler<MemorySpace::kDevice>,
+        kinectfusion::BitmapSkip>>);
 
 // Device surface maps are a move-only owner like the device images they hold.
 static_assert(!std::copy_constructible<kinectfusion::DeviceSurfaceMaps>);

@@ -46,13 +46,20 @@ target_sources(
           volume.cpp)
 
 if(KINECTFUSION_HAS_CUDA)
-  target_sources(kinectfusion PRIVATE cuda/depth_processing.cu cuda/device_pipeline.cu
-                                      cuda/device_volume.cu cuda/icp_correspondence.cu
+  target_sources(kinectfusion PRIVATE cuda/block_rep.cu cuda/depth_processing.cu
+                                      cuda/device_pipeline.cu cuda/device_volume.cu
+                                      cuda/icp_correspondence.cu cuda/occupancy.cu
                                       cuda/raycasting.cu cuda/tsdf_integration.cu)
   target_compile_definitions(kinectfusion PRIVATE KINECTFUSION_HAS_CUDA)
   set_target_properties(kinectfusion PROPERTIES CUDA_STANDARD 20)
   target_compile_options(kinectfusion
                          PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+  # Ablation: approximate device math (div/sqrt/exp become fast intrinsics).
+  option(KINECTFUSION_FAST_MATH "Build CUDA kernels with --use_fast_math" OFF)
+  if(KINECTFUSION_FAST_MATH)
+    target_compile_options(kinectfusion
+                           PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>)
+  endif()
   target_link_libraries(kinectfusion PUBLIC CUDA::cudart_static)
 endif()
 

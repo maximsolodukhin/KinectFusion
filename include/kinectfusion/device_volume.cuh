@@ -1,6 +1,7 @@
 #ifndef KINECTFUSION_INCLUDE_KINECTFUSION_DEVICE_VOLUME_CUH
 #define KINECTFUSION_INCLUDE_KINECTFUSION_DEVICE_VOLUME_CUH
 
+#include <concepts>
 #include <cstddef>
 #include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/volume.hpp>
@@ -30,38 +31,55 @@ struct SpaceTraits<MemorySpace::kDevice> {
 // direction-labelled memcpys over the views suffice.
 template <>
 struct Transfer<MemorySpace::kHost, MemorySpace::kDevice> {
-  static void copy(HostVolumeView destination, ConstDeviceVolumeView source) {
+  template <DenseVoxelGridView DstView, DenseVoxelGridView SrcView>
+    requires std::same_as<typename DstView::GeometryVoxel,
+                          typename SrcView::GeometryVoxel>
+  static void copy(DstView destination, SrcView source) {
+    using GeomVoxel = typename DstView::GeometryVoxel;
     cuda::check(cudaMemcpy(destination.voxels, source.voxels,
-                           source.voxel_count() * sizeof(Voxel),
+                           source.voxel_count() * sizeof(GeomVoxel),
                            cudaMemcpyDeviceToHost),
                 "cudaMemcpy(volume voxels device to host)");
-    cuda::check(cudaMemcpy(destination.colors, source.colors,
-                           source.voxel_count() * sizeof(ColorVoxel),
-                           cudaMemcpyDeviceToHost),
-                "cudaMemcpy(volume colors device to host)");
+    if constexpr (DstView::ColorFacet::kEnabled) {
+      cuda::check(cudaMemcpy(destination.colors, source.colors,
+                             source.voxel_count() *
+                                 sizeof(typename DstView::ColorFacet::Voxel),
+                             cudaMemcpyDeviceToHost),
+                  "cudaMemcpy(volume colors device to host)");
+    }
   }
 };
 
+// The CUDA backend defines and instantiates this for each registered
+// representation.
 template <>
 class VolumeReduction<MemorySpace::kDevice> {
  public:
+  template <DenseVoxelGridView VolumeViewT>
   [[nodiscard]] static std::size_t observed_voxel_count(
-      const ConstDeviceVolumeView& volume);
+      const VolumeViewT& volume);
 };
 
 using DeviceVolumeReduction = VolumeReduction<MemorySpace::kDevice>;
 
 template <>
 struct Transfer<MemorySpace::kDevice, MemorySpace::kHost> {
-  static void copy(DeviceVolumeView destination, ConstHostVolumeView source) {
+  template <DenseVoxelGridView DstView, DenseVoxelGridView SrcView>
+    requires std::same_as<typename DstView::GeometryVoxel,
+                          typename SrcView::GeometryVoxel>
+  static void copy(DstView destination, SrcView source) {
+    using GeomVoxel = typename DstView::GeometryVoxel;
     cuda::check(cudaMemcpy(destination.voxels, source.voxels,
-                           source.voxel_count() * sizeof(Voxel),
+                           source.voxel_count() * sizeof(GeomVoxel),
                            cudaMemcpyHostToDevice),
                 "cudaMemcpy(volume voxels host to device)");
-    cuda::check(cudaMemcpy(destination.colors, source.colors,
-                           source.voxel_count() * sizeof(ColorVoxel),
-                           cudaMemcpyHostToDevice),
-                "cudaMemcpy(volume colors host to device)");
+    if constexpr (DstView::ColorFacet::kEnabled) {
+      cuda::check(cudaMemcpy(destination.colors, source.colors,
+                             source.voxel_count() *
+                                 sizeof(typename DstView::ColorFacet::Voxel),
+                             cudaMemcpyHostToDevice),
+                  "cudaMemcpy(volume colors host to device)");
+    }
   }
 };
 

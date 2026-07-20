@@ -53,6 +53,7 @@ void ensure_level(SurfacePyramidFor<MemorySpace::kDevice>& pyramid,
                          DeviceVec3fImg::uninitialized(width, height));
     return;
   }
+
   DeviceLevel& slot = pyramid.at(level);
   slot.depth_image.ensure_extent(width, height);
   slot.surface.vertices.ensure_extent(width, height);
@@ -73,6 +74,7 @@ void DepthProcessor<MemorySpace::kDevice>::build_surface_pyramid(
   std::size_t width = depth.width;
   std::size_t height = depth.height;
   std::size_t level_count = 0;
+
   for (unsigned int level = 0; level < options_.levels; ++level) {
     if (width == 0U || height == 0U) {
       break;
@@ -82,6 +84,7 @@ void DepthProcessor<MemorySpace::kDevice>::build_surface_pyramid(
     width /= kDownsampleFactor;
     height /= kDownsampleFactor;
   }
+
   pyramid.erase(pyramid.begin() + static_cast<std::ptrdiff_t>(level_count),
                 pyramid.end());
 
@@ -128,8 +131,9 @@ class DevicePyramidSource final : public PyramidSource {
   std::size_t build(const image_proc::DepthImage& raw_depth,
                     const CameraIntrinsics& intrinsics) override {
     raw_depth_.ensure_extent(raw_depth.width(), raw_depth.height());
-    raw_depth_.copy_from(raw_depth.view());
+    raw_depth_.copy_from_staged(raw_depth.view(), depth_staging_);
     processor_.build_surface_pyramid(raw_depth_.view(), intrinsics, pyramid_);
+
     return pyramid_.size();
   }
 
@@ -155,6 +159,7 @@ class DevicePyramidSource final : public PyramidSource {
  private:
   DeviceDepthProcessor processor_;
   DeviceDepthImg raw_depth_;
+  cuda::PinnedBuffer<std::uint16_t> depth_staging_;
   SurfacePyramidFor<MemorySpace::kDevice> pyramid_;
   DeviceDepthFrame frame_;
 };

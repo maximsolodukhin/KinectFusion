@@ -49,9 +49,8 @@ struct IcpDiagnostics {
   float update_rotation{};
 };
 
-// The pose is always present (on failure it is the last good pose for the
-// caller to fall back on this frame), so it sits outside the success/error
-// channel, as do the always-available diagnostics.
+// The pose is always present, so it sits outside the success/error channel.
+// On failure it is the last good pose.
 struct IcpOutcome {
   Eigen::Matrix4f pose{Eigen::Matrix4f::Identity()};
   IcpDiagnostics diagnostics{};
@@ -59,9 +58,8 @@ struct IcpOutcome {
   std::expected<IcpSuccess, IcpFailure> result{};
 };
 
-// One pose-tracking request: the image-aligned tracking surfaces (the model
-// rendered at model_camera_to_world with model_intrinsics), the pose to start
-// optimising from, and the iteration budget for this pyramid level.
+// One pose-tracking request for one pyramid level. The model surfaces were
+// rendered at model_camera_to_world with model_intrinsics.
 template <MemorySpace Space = MemorySpace::kHost>
 struct BasicTrackingRequest {
   using TransformMat = Eigen::Matrix4f;
@@ -76,9 +74,8 @@ struct BasicTrackingRequest {
 using TrackingRequest = BasicTrackingRequest<MemorySpace::kHost>;
 using DeviceTrackingRequest = BasicTrackingRequest<MemorySpace::kDevice>;
 
-// Run-wide ICP tuning. These are fixed for the whole reconstruction, so they
-// are passed to the tracker once at construction. The per-call iteration budget
-// is not here: it varies by pyramid level and lives in TrackingRequest.
+// Run-wide ICP tuning, fixed for the whole reconstruction. The iteration
+// budget varies by pyramid level and lives in TrackingRequest.
 struct ProjectiveIcpOptions {
   std::size_t min_correspondences{kDefaultMinIcpCorrespondences};
   float max_point_distance{kDefaultMaxIcpPointDistanceMeters};
@@ -90,11 +87,14 @@ struct ProjectiveIcpOptions {
   float min_system_eigenvalue{kDefaultMinIcpSystemEigenvalue};
   float max_condition_number{kDefaultMaxIcpConditionNumber};
   IcpGraphBuild device_graph_build{IcpGraphBuild::kExplicit};
+  // Ablation: run the whole GN loop on the device with one sync per level.
+  // The stability check runs once on the final system.
+  bool device_solve{false};
 };
 
-// Gauss-Newton driver: a per-iteration correspondence sweep in the request's
-// memory space builds the normal equations; the 6x6 stability check and solve
-// stay on the host.
+// Gauss-Newton driver. A per-iteration correspondence sweep builds the
+// normal equations in the request's memory space. The stability check and
+// the 6x6 solve stay on the host.
 class ProjectiveIcpTracker {
  public:
   explicit ProjectiveIcpTracker(ProjectiveIcpOptions options = {})
@@ -106,8 +106,7 @@ class ProjectiveIcpTracker {
   [[nodiscard]] IcpOutcome estimate_pose(
       const DeviceTrackingRequest& request) const;
 
-  // Tracks surfaces whose model was rendered at `pose`, starting the
-  // optimisation from that same pose.
+  // `pose` is the model render pose and also the initial pose.
   template <MemorySpace Space>
   [[nodiscard]] IcpOutcome estimate_pose(
       const TrackingSurfaces<Space>& surfaces,
@@ -148,6 +147,9 @@ class ProjectiveIcpTracker {
     return {.max_point_distance = options_.max_point_distance,
             .min_normal_dot = options_.min_normal_dot};
   }
+
+  [[nodiscard]] IcpOutcome estimate_device_loop(
+      const DeviceTrackingRequest& request) const;
 
   [[nodiscard]] IcpNormalEquations find_correspondences(
       const TrackingRequest& request,

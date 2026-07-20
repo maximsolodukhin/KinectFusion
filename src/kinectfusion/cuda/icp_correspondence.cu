@@ -65,7 +65,12 @@ __device__ void warp_reduce(IcpNormalEquations& local) {
 // time to be spent in atomicAdd.
 __global__ void reduce_correspondences_kernel(
     const DeviceCorrespondenceSearch* search_parameters,
-    IcpNormalEquations* result) {
+    IcpNormalEquations* result, const DeviceIcpLoopResult* loop_state) {
+  // After convergence or failure, the remaining iterations of the loop
+  // graph collapse to this one broadcast load per thread.
+  if (loop_state != nullptr && loop_state->status != 0) {
+    return;
+  }
   const DeviceCorrespondenceSearch& search = *search_parameters;
   __shared__ float block_sums[kFloatSums];
   __shared__ unsigned long long block_count;
@@ -95,7 +100,9 @@ __global__ void reduce_correspondences_kernel(
     if (index < pixel_count) {
       match = search.match(index % width, index / width);
     }
+
     warp_count += __popc(__ballot_sync(kFullWarpMask, match.has_value()));
+
     if (match) {
       local.accumulate(*match);
     }
@@ -104,12 +111,15 @@ __global__ void reduce_correspondences_kernel(
   warp_reduce(local);
   if (threadIdx.x % kWarpSize == 0 && warp_count != 0) {
     std::size_t slot = 0;
+
     for (std::size_t entry = 0; entry < kIcpUpperTriangleSize; ++entry) {
       atomicAdd(&block_sums[slot++], local.jtj[entry]);
     }
+
     for (std::size_t entry = 0; entry < kIcpDof; ++entry) {
       atomicAdd(&block_sums[slot++], local.jtr[entry]);
     }
+
     atomicAdd(&block_sums[slot], local.distance_sum);
     atomicAdd(&block_count, warp_count);
   }
@@ -120,12 +130,140 @@ __global__ void reduce_correspondences_kernel(
     for (std::size_t entry = 0; entry < kIcpUpperTriangleSize; ++entry) {
       atomicAdd(&result->jtj[entry], block_sums[slot++]);
     }
+
     for (std::size_t entry = 0; entry < kIcpDof; ++entry) {
       atomicAdd(&result->jtr[entry], block_sums[slot++]);
     }
+
     atomicAdd(&result->distance_sum, block_sums[slot]);
     atomicAdd(reinterpret_cast<unsigned long long*>(&result->count),
               block_count);
+  }
+}
+
+// One thread: build the 6x6 SPD system, solve it, and compose the Rodrigues
+// increment onto the camera pose for the next reduce in the graph chain.
+// Status latches: once set, later steps do nothing.
+__global__ void solve_update_kernel(const IcpNormalEquations* equations,
+                                    DeviceCorrespondenceSearch* search,
+                                    DeviceIcpLoopResult* result,
+                                    DeviceIcpLoopParams params) {
+  if (result->status != 0) {
+    return;
+  }
+  const IcpNormalEquations& eq = *equations;
+  result->equations = eq;
+  if (eq.count < params.min_correspondences) {
+    result->status = 2;
+    return;
+  }
+
+  float mat[kIcpDof][kIcpDof];
+  std::size_t entry = 0;
+
+  for (std::size_t row = 0; row < kIcpDof; ++row) {
+    for (std::size_t col = row; col < kIcpDof; ++col) {
+      mat[row][col] = eq.jtj[entry];
+      mat[col][row] = eq.jtj[entry];
+      ++entry;
+    }
+  }
+
+  // In-place Cholesky (LLT); non-positive pivot = solve failure.
+  float chol[kIcpDof][kIcpDof];
+  for (std::size_t row = 0; row < kIcpDof; ++row) {
+    for (std::size_t col = 0; col <= row; ++col) {
+      float sum = mat[row][col];
+      for (std::size_t k = 0; k < col; ++k) {
+        sum -= chol[row][k] * chol[col][k];
+      }
+      if (row == col) {
+        if (sum <= 0.0F) {
+          result->status = 3;
+          return;
+        }
+        chol[row][row] = sqrtf(sum);
+      } else {
+        chol[row][col] = sum / chol[col][col];
+      }
+    }
+  }
+
+  float solution[kIcpDof];
+
+  for (std::size_t row = 0; row < kIcpDof; ++row) {  // forward: L y = b
+    float sum = eq.jtr[row];
+    for (std::size_t k = 0; k < row; ++k) {
+      sum -= chol[row][k] * solution[k];
+    }
+    solution[row] = sum / chol[row][row];
+  }
+
+  for (std::size_t row = kIcpDof; row-- > 0;) {  // backward: L^T x = y
+    float sum = solution[row];
+    for (std::size_t k = row + 1; k < kIcpDof; ++k) {
+      sum -= chol[k][row] * solution[k];
+    }
+    solution[row] = sum / chol[row][row];
+  }
+
+  const Vec3f axis_angle = make_vec3f(solution[0], solution[1], solution[2]);
+  const Vec3f translation = make_vec3f(solution[3], solution[4], solution[5]);
+  const float angle = norm(axis_angle);
+  const float update_translation = norm(translation);
+
+  result->update_translation = update_translation;
+  result->update_rotation = angle;
+
+  if (update_translation > params.max_update_translation ||
+      angle > params.max_update_rotation) {
+    result->status = 4;
+    return;
+  }
+
+  // Rodrigues rotation from the angle-axis increment.
+  Mat3f rot{.row_x = make_vec3f(1.0F, 0.0F, 0.0F),
+            .row_y = make_vec3f(0.0F, 1.0F, 0.0F),
+            .row_z = make_vec3f(0.0F, 0.0F, 1.0F)};
+  if (angle > 1.0e-12F) {
+    const Vec3f unit = axis_angle / angle;
+    const float sin_a = sinf(angle);
+    const float cos_a = cosf(angle);
+    const float one_c = 1.0F - cos_a;
+    rot.row_x = make_vec3f(cos_a + (unit.x * unit.x * one_c),
+                           (unit.x * unit.y * one_c) - (unit.z * sin_a),
+                           (unit.x * unit.z * one_c) + (unit.y * sin_a));
+    rot.row_y = make_vec3f((unit.y * unit.x * one_c) + (unit.z * sin_a),
+                           cos_a + (unit.y * unit.y * one_c),
+                           (unit.y * unit.z * one_c) - (unit.x * sin_a));
+    rot.row_z = make_vec3f((unit.z * unit.x * one_c) - (unit.y * sin_a),
+                           (unit.z * unit.y * one_c) + (unit.x * sin_a),
+                           cos_a + (unit.z * unit.z * one_c));
+  }
+  RigidTransform& camera = search->transforms_ref().camera;
+  const Mat3f old = camera.rotation;
+  Mat3f composed;
+
+  composed.row_x = make_vec3f(
+      dot(rot.row_x, make_vec3f(old.row_x.x, old.row_y.x, old.row_z.x)),
+      dot(rot.row_x, make_vec3f(old.row_x.y, old.row_y.y, old.row_z.y)),
+      dot(rot.row_x, make_vec3f(old.row_x.z, old.row_y.z, old.row_z.z)));
+  composed.row_y = make_vec3f(
+      dot(rot.row_y, make_vec3f(old.row_x.x, old.row_y.x, old.row_z.x)),
+      dot(rot.row_y, make_vec3f(old.row_x.y, old.row_y.y, old.row_z.y)),
+      dot(rot.row_y, make_vec3f(old.row_x.z, old.row_y.z, old.row_z.z)));
+  composed.row_z = make_vec3f(
+      dot(rot.row_z, make_vec3f(old.row_x.x, old.row_y.x, old.row_z.x)),
+      dot(rot.row_z, make_vec3f(old.row_x.y, old.row_y.y, old.row_z.y)),
+      dot(rot.row_z, make_vec3f(old.row_x.z, old.row_y.z, old.row_z.z)));
+
+  camera.rotation = composed;
+  camera.translation = (rot * camera.translation) + translation;
+  result->transforms = search->transforms_ref();
+
+  if (update_translation < params.min_update_translation &&
+      angle < params.min_update_rotation) {
+    result->status = 1;
   }
 }
 
@@ -136,10 +274,17 @@ __global__ void reduce_correspondences_kernel(
 // Only the grid size differs between pyramid levels.
 // The private stream is blocking, so the legacy-stream pyramid and
 // raycast kernels order with the graph both ways.
-template <typename Build>
+template <GraphBuildStrategy Build>
 struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
   struct GraphEntry {
     unsigned int grid{};
+    cudaGraph_t graph{};
+    cudaGraphExec_t executable{};
+  };
+
+  struct LoopEntry {
+    unsigned int grid{};
+    unsigned int iterations{};
     cudaGraph_t graph{};
     cudaGraphExec_t executable{};
   };
@@ -148,8 +293,12 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
   cuda::PinnedBuffer<IcpNormalEquations> staging{1};
   cuda::DeviceBuffer<DeviceCorrespondenceSearch> search_device{1};
   cuda::PinnedBuffer<DeviceCorrespondenceSearch> search_staging{1};
+  cuda::DeviceBuffer<DeviceIcpLoopResult> loop_result_device{1};
+  cuda::PinnedBuffer<DeviceIcpLoopResult> loop_result_staging{1};
+
   cudaStream_t stream{};
   std::vector<GraphEntry> graphs;
+  std::vector<LoopEntry> loop_graphs;
 
   Scratch() {
     cuda::check(cudaStreamCreate(&stream), "cudaStreamCreate(ICP reduce)");
@@ -160,7 +309,58 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
       cudaGraphExecDestroy(entry.executable);
       cudaGraphDestroy(entry.graph);
     }
+    for (LoopEntry& entry : loop_graphs) {
+      cudaGraphExecDestroy(entry.executable);
+      cudaGraphDestroy(entry.graph);
+    }
     cudaStreamDestroy(stream);
+  }
+
+  // The whole-level GN loop as one captured graph. Upload the search and a
+  // zeroed result once, run memset + reduce + solve/update per iteration,
+  // then download the result. One sync per level, not one per iteration.
+  cudaGraphExec_t loop_executable_for(unsigned int grid,
+                                      unsigned int iterations,
+                                      const DeviceIcpLoopParams& params) {
+    for (const LoopEntry& entry : loop_graphs) {
+      if (entry.grid == grid && entry.iterations == iterations) {
+        return entry.executable;
+      }
+    }
+    LoopEntry entry{.grid = grid, .iterations = iterations};
+    cuda::check(
+        cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal),
+        "cudaStreamBeginCapture(ICP loop)");
+    cudaMemcpyAsync(search_device.data(), search_staging.data(),
+                    sizeof(DeviceCorrespondenceSearch), cudaMemcpyHostToDevice,
+                    stream);
+    cudaMemsetAsync(loop_result_device.data(), 0, sizeof(DeviceIcpLoopResult),
+                    stream);
+    for (unsigned int iteration = 0; iteration < iterations; ++iteration) {
+      cudaMemsetAsync(accumulator.data(), 0, sizeof(IcpNormalEquations),
+                      stream);
+
+      reduce_correspondences_kernel<<<grid, kReduceBlock, 0, stream>>>(
+          search_device.data(), accumulator.data(), loop_result_device.data());
+      solve_update_kernel<<<1, 1, 0, stream>>>(
+          accumulator.data(), search_device.data(), loop_result_device.data(),
+          params);
+    }
+
+    cudaMemcpyAsync(loop_result_staging.data(), loop_result_device.data(),
+                    sizeof(DeviceIcpLoopResult), cudaMemcpyDeviceToHost,
+                    stream);
+    cuda::check(cudaStreamEndCapture(stream, &entry.graph),
+                "cudaStreamEndCapture(ICP loop)");
+    try {
+      cuda::check(cudaGraphInstantiate(&entry.executable, entry.graph, 0),
+                  "cudaGraphInstantiate(ICP loop)");
+    } catch (...) {
+      cudaGraphDestroy(entry.graph);
+      throw;
+    }
+    loop_graphs.push_back(entry);
+    return entry.executable;
   }
 
   Scratch(const Scratch&) = delete;
@@ -208,10 +408,13 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
     cudaMemcpyAsync(search_device.data(), search_staging.data(),
                     sizeof(DeviceCorrespondenceSearch), cudaMemcpyHostToDevice,
                     stream);
+
     reduce_correspondences_kernel<<<grid, kReduceBlock, 0, stream>>>(
-        search_device.data(), accumulator.data());
+        search_device.data(), accumulator.data(), nullptr);
+
     cudaMemcpyAsync(staging.data(), accumulator.data(),
                     sizeof(IcpNormalEquations), cudaMemcpyDeviceToHost, stream);
+
     cuda::check(cudaStreamEndCapture(stream, &graph),
                 "cudaStreamEndCapture(ICP)");
     return graph;
@@ -224,6 +427,7 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
     cuda::check(cudaGraphCreate(&graph, 0), "cudaGraphCreate(ICP)");
     try {
       static_assert(sizeof(IcpNormalEquations) % sizeof(unsigned int) == 0);
+
       cudaMemsetParams zero{};
       zero.dst = accumulator.data();
       zero.value = 0;
@@ -231,6 +435,7 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
       zero.width = sizeof(IcpNormalEquations) / sizeof(unsigned int);
       zero.height = 1;
       cudaGraphNode_t zero_node{};
+
       cuda::check(cudaGraphAddMemsetNode(&zero_node, graph, nullptr, 0, &zero),
                   "graph memset node(ICP)");
 
@@ -243,7 +448,9 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
 
       const DeviceCorrespondenceSearch* search_argument = search_device.data();
       IcpNormalEquations* result_argument = accumulator.data();
-      std::array<void*, 2> arguments{&search_argument, &result_argument};
+      const DeviceIcpLoopResult* loop_argument = nullptr;
+      std::array<void*, 3> arguments{&search_argument, &result_argument,
+                                     &loop_argument};
       cudaKernelNodeParams kernel{};
       kernel.func = reinterpret_cast<void*>(&reduce_correspondences_kernel);
       kernel.gridDim = dim3{grid, 1, 1};
@@ -273,21 +480,21 @@ struct BasicDeviceCorrespondenceSweep<Build>::Scratch {
   }
 };
 
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep() =
     default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::~BasicDeviceCorrespondenceSweep() =
     default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep(
     BasicDeviceCorrespondenceSweep&&) noexcept = default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>&
 BasicDeviceCorrespondenceSweep<Build>::operator=(
     BasicDeviceCorrespondenceSweep&&) noexcept = default;
 
-template <typename Build>
+template <GraphBuildStrategy Build>
 IcpNormalEquations BasicDeviceCorrespondenceSweep<Build>::run(
     const DeviceCorrespondenceSearch& search) {
   const std::size_t pixel_count =
@@ -312,6 +519,29 @@ IcpNormalEquations BasicDeviceCorrespondenceSweep<Build>::run(
               "reduce_correspondences graph");
 
   return *scratch_->staging.data();
+}
+
+template <GraphBuildStrategy Build>
+DeviceIcpLoopResult BasicDeviceCorrespondenceSweep<Build>::run_loop(
+    const DeviceCorrespondenceSearch& search, unsigned int iterations,
+    const DeviceIcpLoopParams& params) {
+  const std::size_t pixel_count =
+      search.live().vertices.width * search.live().vertices.height;
+  if (pixel_count == 0 || iterations == 0) {
+    return {};
+  }
+  if (!scratch_) {
+    scratch_ = std::make_unique<Scratch>();
+  }
+  const unsigned int grid =
+      std::min(cuda::ceil_div(pixel_count, kReduceBlock), kMaxReduceGrid);
+  *scratch_->search_staging.data() = search;
+  cuda::check(
+      cudaGraphLaunch(scratch_->loop_executable_for(grid, iterations, params),
+                      scratch_->stream),
+      "icp loop graph launch");
+  cuda::check(cudaStreamSynchronize(scratch_->stream), "icp loop graph");
+  return *scratch_->loop_result_staging.data();
 }
 
 template class BasicDeviceCorrespondenceSweep<ExplicitGraphBuild>;

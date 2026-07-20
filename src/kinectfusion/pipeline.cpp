@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <kinectfusion/block_rep.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/pipeline.hpp>
@@ -7,6 +8,7 @@
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_representation.hpp>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -17,50 +19,114 @@
 namespace kinectfusion {
 namespace {
 
-class HostPipeline final : public Pipeline {
+template <typename Rep>
+  requires VolumeRepresentation<Rep, MemorySpace::kHost>
+class BasicHostPipeline final : public Pipeline {
+  static constexpr MemorySpace kSpace = MemorySpace::kHost;
+
  public:
-  explicit HostPipeline(const PipelineConfig& config)
+  explicit BasicHostPipeline(const PipelineConfig& config)
       : Pipeline(config.name),
-        volume_(config.volume),
+        rep_(RepresentationFactory::make<Rep>(config.volume,
+                                              config.sparse_block_capacity)),
+        index_(make_index(config)),
         integrator_(config.tsdf_rule, config.integration),
         raycaster_(config.raycast) {}
 
   using Pipeline::integrate;
 
   void integrate(const DepthFrame& frame) override {
-    integrator_.integrate(volume_.view(), frame);
+    TsdfIntegrator::validate_frame(frame);
+    rep_.integrate(frame.view(), integrator_.options(), integrator_.rule());
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      index_.rebuild(rep_.view());
+    }
   }
 
   [[nodiscard]] SurfaceMaps raycast(const RaycastCamera& camera) override {
-    return raycaster_.raycast(volume_.view(), camera);
+    return render_model(camera);
   }
 
   [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
       const RaycastCamera& camera, const LiveViewsVariant& live) override {
-    tracking_model_ = raycaster_.raycast(volume_.view(), camera);
+    tracking_model_ = render_model(camera);
     return HostTrackingSurfaces::from_render(
         std::get<ConstHostSurfaceView>(live), view(tracking_model_));
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
-    return HostVolumeReduction::observed_voxel_count(volume_.view());
+    return rep_.observed_voxel_count();
   }
 
   [[nodiscard]] ConstHostVolumeView host_view(
-      std::optional<HostVolume>& /*staging*/) const override {
-    return volume_.view();
+      std::optional<HostVolume>& staging) const override {
+    return rep_.host_dense_view(staging);
   }
 
  private:
-  HostVolume volume_;
+  [[nodiscard]] static EmptySpaceIndex<kSpace> make_index(
+      const PipelineConfig& config) {
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      return {config.raycast_backend, config.volume};
+    } else {
+      return {};
+    }
+  }
+
+  // Sparse storage has no empty-space index, so the pipeline instantiates
+  // only the NoSkip march.
+  [[nodiscard]] SurfaceMaps render_model(const RaycastCamera& camera) {
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      return index_.visit([&](const auto& skip) {
+        return raycaster_.render(rep_.sampler(), camera, skip);
+      });
+    } else {
+      return raycaster_.render(rep_.sampler(), camera);
+    }
+  }
+
+  Rep rep_;
+  EmptySpaceIndex<kSpace> index_;
   TsdfIntegrator integrator_;
   Raycaster raycaster_;
   SurfaceMaps tracking_model_;
 };
 
+// The host half of the registry: one explicit combination per registered
+// (voxel, color) pair.
+template <TsdfVoxel GeomVoxel, typename Color>
+std::unique_ptr<Pipeline> make_host(const PipelineConfig& config) {
+  if (config.storage == StorageLayout::kSparse) {
+    return std::make_unique<
+        BasicHostPipeline<BlockRep<MemorySpace::kHost, GeomVoxel, Color>>>(
+        config);
+  }
+  return std::make_unique<
+      BasicHostPipeline<DenseRep<MemorySpace::kHost, GeomVoxel, Color>>>(
+      config);
+}
+
+std::unique_ptr<Pipeline> create_host(const PipelineConfig& config) {
+  return Pipeline::visit_storage(
+      config, [&config]<TsdfVoxel GeomVoxel, typename Color>() {
+        return make_host<GeomVoxel, Color>(config);
+      });
+}
+
 }  // namespace
 
 Pipeline::Pipeline(std::string name) : name_(std::move(name)) {}
+
+void Pipeline::require_valid_storage(const PipelineConfig& config) {
+  if (config.storage != StorageLayout::kSparse) {
+    return;
+  }
+  require(config.integration.mode == IntegrationMode::kBand,
+          "Sparse storage implies band integration (nothing is allocated far "
+          "from surfaces); set integration = 'band'");
+  require(config.raycast_backend == RaycastBackend::kMarch,
+          "Sparse storage supports the plain march raycast backend");
+}
 
 #ifndef KINECTFUSION_HAS_CUDA
 bool Pipeline::device_available() { return false; }
@@ -73,6 +139,8 @@ std::unique_ptr<Pipeline> Pipeline::create_device(
 
 Pipeline::Creation Pipeline::create(const PipelineConfig& config) {
   require(!config.name.empty(), "Pipeline requires a non-empty name");
+  require_valid_storage(config);
+  std::string fallback_reason{};
 
   if (config.space == MemorySpace::kDevice) {
     if (device_available()) {
@@ -80,14 +148,13 @@ Pipeline::Creation Pipeline::create(const PipelineConfig& config) {
                       .space = MemorySpace::kDevice,
                       .fallback_reason = {}};
     }
-    return Creation{
-        .pipeline = std::make_unique<HostPipeline>(config),
-        .space = MemorySpace::kHost,
-        .fallback_reason = "device memory space unavailable; running on host"};
+
+    fallback_reason = "device memory space unavailable; running on host";
   }
-  return Creation{.pipeline = std::make_unique<HostPipeline>(config),
+
+  return Creation{.pipeline = create_host(config),
                   .space = MemorySpace::kHost,
-                  .fallback_reason = {}};
+                  .fallback_reason = fallback_reason};
 }
 
 }  // namespace kinectfusion

@@ -49,6 +49,17 @@ class PipelineSet {
   void integrate(const DepthFrame& frame,
                  const DeviceDepthFrame* shared_upload = nullptr);
 
+  // Per-member variants for independent per-pipeline tracking: each pipeline
+  // integrates, tracks, and raycasts at its own pose. The shared upload holds
+  // only frame data, so one upload serves every member.
+  void integrate_member(std::size_t index, const DepthFrame& frame,
+                        const DeviceDepthFrame* shared_upload = nullptr);
+  void track_member(std::size_t index, const RaycastCamera& camera,
+                    const PyramidLevel& live,
+                    TrackingSurfaceConsumer& consumer);
+  [[nodiscard]] SurfaceMaps raycast_member(std::size_t index,
+                                           const RaycastCamera& camera);
+
   [[nodiscard]] SurfaceMaps raycast_reference(const RaycastCamera& camera);
 
   void track(const RaycastCamera& camera, const PyramidLevel& live,
@@ -82,6 +93,7 @@ class PipelineSet {
 
   [[nodiscard]] std::size_t size() const { return members_.size(); }
   [[nodiscard]] const std::vector<Member>& members() const { return members_; }
+  [[nodiscard]] std::size_t reference_index() const { return reference_index_; }
   [[nodiscard]] const Pipeline& reference() const {
     return *members_.at(reference_index_).pipeline;
   }

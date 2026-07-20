@@ -1,0 +1,32 @@
+# ICP solver ablation: Gauss-Newton vs Levenberg vs Marquardt vs full
+# Levenberg-Marquardt. Each pipeline tracks independently with its own damping,
+# so the four solvers are compared in one run. Per-pipeline ATE against the
+# dataset groundtruth is printed at the end (compare-every 0 skips the volume
+# comparison, which this ablation does not need).
+#
+# Run per dataset, e.g.:
+#   kinectfusion data/rgbd_dataset_freiburg1_desk \
+#     --pipelines configs/ablate_icp.toml --space cuda --preload \
+#     --volume-resolution 512 --frames -1 --output-dir out/desk
+reference = "gauss-newton"
+compare-every-n-frames = 0
+
+[[pipeline]]
+name = "gauss-newton"
+icp-damping = "none"
+
+[[pipeline]]
+name = "levenberg"
+icp-damping = "identity"
+icp-lambda = 0.001
+
+[[pipeline]]
+name = "marquardt"
+icp-damping = "diagonal"
+icp-lambda = 0.001
+
+[[pipeline]]
+name = "levenberg-marquardt"
+icp-damping = "diagonal"
+icp-adaptive-damping = true
+icp-lambda = 0.001

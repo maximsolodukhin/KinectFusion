@@ -44,7 +44,11 @@ class BasicDevicePipeline final : public Pipeline {
       fallback_upload_.assign(frame);
       upload = &fallback_upload_;
     }
-    rep_.integrate(upload->view(), integrator_.options(), integrator_.rule());
+    // The upload carries only the shared frame data; the pose is per pipeline,
+    // so a set can share one upload across members that tracked apart.
+    DeviceDepthFrameView view = upload->view();
+    view.world_to_camera = from_eigen(frame.world_to_camera);
+    rep_.integrate(view, integrator_.options(), integrator_.rule());
     if constexpr (FlatVoxelRepresentation<Rep>) {
       index_.rebuild(rep_.view());
     }

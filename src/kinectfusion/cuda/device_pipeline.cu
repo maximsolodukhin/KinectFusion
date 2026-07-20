@@ -82,6 +82,16 @@ class BasicDevicePipeline final : public Pipeline {
     return rep_.host_dense_view(staging);
   }
 
+  [[nodiscard]] MarchingCubes::Mesh extract_mesh(
+      float min_weight) const override {
+    if constexpr (requires { rep_.host_snapshot(); }) {
+      return MarchingCubes::extract(rep_.host_snapshot().view(), min_weight);
+    } else {
+      std::optional<HostVolume> staging;
+      return MarchingCubes::extract(rep_.host_dense_view(staging), min_weight);
+    }
+  }
+
  private:
   using MapExtent = std::pair<std::size_t, std::size_t>;
 

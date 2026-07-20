@@ -286,6 +286,12 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_flag("--write-point-clouds,!--no-write-point-clouds",
                app_options.write_point_clouds,
                "Write the raycast point clouds as binary PLY files.");
+  app.add_flag("--write-mesh,!--no-write-mesh", app_options.write_mesh,
+               "Write the final TSDF surface as a triangle mesh (mesh.ply).");
+  app.add_option("--mesh-min-weight", app_options.mesh_min_weight,
+                 "Minimum TSDF weight for the mesh. Cells with a corner below "
+                 "this weight are not meshed. Set 0 to mesh every observed "
+                 "voxel.");
   app.add_flag(
       "--raycast-tsdf-from-valid-corners,!--no-raycast-tsdf-from-valid-corners",
       app_options.raycast_tsdf_from_valid_corners,

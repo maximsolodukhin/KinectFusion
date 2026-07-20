@@ -167,6 +167,29 @@ template <MemorySpace Space = MemorySpace::kHost, typename GeomVoxel = Voxel,
 using SparseVolumeSampler = TrilinearSampler<
     SparseCornerAccess<SparseVolumeView<Space, true, GeomVoxel, Color>>>;
 
+// Owning host copy of a device sparse volume: the grid plus the allocated
+// pool prefix. Host passes (meshing) read it through view() without a dense
+// staging copy.
+template <typename GeomVoxel = Voxel, typename Color = FloatColorFacet>
+struct SparseVolumeSnapshot {
+  std::vector<std::uint32_t> grid;
+  std::vector<GeomVoxel> pool;
+  std::vector<typename Color::Voxel> color_pool;
+  VolumeGeometry geometry;
+  BlockGrid blocks;
+
+  [[nodiscard]] SparseVolumeView<MemorySpace::kHost, true, GeomVoxel, Color>
+  view() const {
+    return {.grid = grid.data(),
+            .pool = pool.data(),
+            .color_pool = color_pool.data(),
+            .geometry = geometry,
+            .blocks = blocks,
+            .capacity =
+                static_cast<std::uint32_t>(pool.size() / kVoxelBlockVolume)};
+  }
+};
+
 template <MemorySpace Space, typename GeomVoxel = Voxel,
           typename Color = FloatColorFacet>
 class BlockRep;

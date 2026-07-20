@@ -38,6 +38,7 @@ target_sources(
   PRIVATE comparison.cpp
           depth_processing.cpp
           icp_optimizer.cpp
+          marching_cubes.cpp
           pipeline.cpp
           pipeline_set.cpp
           raycasting.cpp

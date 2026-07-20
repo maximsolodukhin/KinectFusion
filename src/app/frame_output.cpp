@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -13,6 +14,7 @@
 #include <future>
 #include <ios>
 #include <kinectfusion/image_proc/write_png.hpp>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
@@ -116,6 +118,70 @@ void FrameOutput::write_raycast_point_cloud(
          << "property uchar blue\n"
          << "end_header\n";
   output.write(vertices.data(), static_cast<std::streamsize>(vertices.size()));
+}
+
+void FrameOutput::write_mesh(const kinectfusion::MarchingCubes::Mesh& mesh,
+                             const std::string& subdirectory) const {
+  static_assert(std::endian::native == std::endian::little);
+
+  std::string vertices;
+  constexpr std::size_t kVertexBytes =
+      (2 * sizeof(kinectfusion::Vec3f)) + (3 * sizeof(std::uint8_t));
+  vertices.reserve(mesh.positions.size() * kVertexBytes);
+  const auto append_vec3f = [&vertices](const kinectfusion::Vec3f& value) {
+    const auto bytes =
+        std::bit_cast<std::array<char, sizeof(kinectfusion::Vec3f)>>(value);
+    vertices.append(bytes.data(), bytes.size());
+  };
+  const auto append_channel = [&vertices](float value) {
+    vertices.push_back(static_cast<char>(static_cast<std::uint8_t>(
+        std::clamp(value, 0.0F, kinectfusion::kMaxColorChannelValueF))));
+  };
+  for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+    append_vec3f(mesh.positions[i]);
+    append_vec3f(mesh.normals[i]);
+    append_channel(mesh.colors[i].x);
+    append_channel(mesh.colors[i].y);
+    append_channel(mesh.colors[i].z);
+  }
+
+  std::string faces;
+  constexpr std::size_t kFaceBytes =
+      sizeof(std::uint8_t) + (3 * sizeof(std::uint32_t));
+  faces.reserve(mesh.triangles.size() * kFaceBytes);
+  for (const auto& triangle : mesh.triangles) {
+    faces.push_back(static_cast<char>(3));
+    const auto bytes =
+        std::bit_cast<std::array<char, sizeof(triangle)>>(triangle);
+    faces.append(bytes.data(), bytes.size());
+  }
+
+  const auto dir =
+      subdirectory.empty() ? output_dir_ : output_dir_ / subdirectory;
+  std::filesystem::create_directories(dir);
+  const auto path = dir / "mesh.ply";
+  std::ofstream output{path, std::ios::binary};
+  if (!output) {
+    throw std::runtime_error{"Failed to open mesh output: " + path.string()};
+  }
+
+  output << "ply\n"
+         << "format binary_little_endian 1.0\n"
+         << "element vertex " << mesh.positions.size() << '\n'
+         << "property float x\n"
+         << "property float y\n"
+         << "property float z\n"
+         << "property float nx\n"
+         << "property float ny\n"
+         << "property float nz\n"
+         << "property uchar red\n"
+         << "property uchar green\n"
+         << "property uchar blue\n"
+         << "element face " << mesh.triangles.size() << '\n'
+         << "property list uchar uint vertex_indices\n"
+         << "end_header\n";
+  output.write(vertices.data(), static_cast<std::streamsize>(vertices.size()));
+  output.write(faces.data(), static_cast<std::streamsize>(faces.size()));
 }
 
 void FrameOutput::write_frame(kinectfusion::SurfaceMaps maps, int frame_index,

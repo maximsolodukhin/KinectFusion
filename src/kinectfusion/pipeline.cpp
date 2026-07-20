@@ -2,6 +2,7 @@
 #include <kinectfusion/block_rep.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
+#include <kinectfusion/marching_cubes.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
@@ -61,6 +62,11 @@ class BasicHostPipeline final : public Pipeline {
   [[nodiscard]] ConstHostVolumeView host_view(
       std::optional<HostVolume>& staging) const override {
     return rep_.host_dense_view(staging);
+  }
+
+  [[nodiscard]] MarchingCubes::Mesh extract_mesh(
+      float min_weight) const override {
+    return MarchingCubes::extract(rep_.view(), min_weight);
   }
 
  private:

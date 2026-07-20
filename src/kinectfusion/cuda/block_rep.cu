@@ -176,52 +176,58 @@ BlockRep<MemorySpace::kDevice, GeomVoxel, Color>::observed_voxel_count() const {
 }
 
 template <typename GeomVoxel, typename Color>
-ConstHostVolumeView
-BlockRep<MemorySpace::kDevice, GeomVoxel, Color>::host_dense_view(
-    std::optional<HostVolume>& staging) const {
+SparseVolumeSnapshot<GeomVoxel, Color>
+BlockRep<MemorySpace::kDevice, GeomVoxel, Color>::host_snapshot() const {
   unsigned int allocated = 0;
   allocated_.copy_to_host(&allocated, 1);
   const std::size_t used = std::min<std::size_t>(allocated, capacity_);
 
-  std::vector<std::uint32_t> grid_host(grid_.size());
-  grid_.copy_to_host(grid_host.data(), grid_host.size());
+  SparseVolumeSnapshot<GeomVoxel, Color> snapshot{
+      .grid = std::vector<std::uint32_t>(grid_.size()),
+      .pool = std::vector<GeomVoxel>(used * kVoxelBlockVolume),
+      .color_pool = {},
+      .geometry = geometry_,
+      .blocks = blocks_};
+  grid_.copy_to_host(snapshot.grid.data(), snapshot.grid.size());
   // Download only the allocated prefix of each pool, so plain cudaMemcpy
   // instead of the whole-buffer DeviceBuffer helper.
-  std::vector<GeomVoxel> pool_host(used * kVoxelBlockVolume);
-  if (!pool_host.empty()) {
-    cuda::check(cudaMemcpy(pool_host.data(), pool_.data(),
-                           pool_host.size() * sizeof(GeomVoxel),
+  if (!snapshot.pool.empty()) {
+    cuda::check(cudaMemcpy(snapshot.pool.data(), pool_.data(),
+                           snapshot.pool.size() * sizeof(GeomVoxel),
                            cudaMemcpyDeviceToHost),
                 "sparse pool download");
   }
-  std::vector<typename Color::Voxel> color_host;
   if constexpr (Color::kEnabled) {
-    color_host.resize(used * kVoxelBlockVolume);
-    if (!color_host.empty()) {
-      cuda::check(cudaMemcpy(color_host.data(), color_pool_.data(),
-                             color_host.size() * sizeof(typename Color::Voxel),
-                             cudaMemcpyDeviceToHost),
-                  "sparse color pool download");
+    snapshot.color_pool.resize(used * kVoxelBlockVolume);
+    if (!snapshot.color_pool.empty()) {
+      cuda::check(
+          cudaMemcpy(snapshot.color_pool.data(), color_pool_.data(),
+                     snapshot.color_pool.size() * sizeof(typename Color::Voxel),
+                     cudaMemcpyDeviceToHost),
+          "sparse color pool download");
     }
   }
+  return snapshot;
+}
+
+template <typename GeomVoxel, typename Color>
+ConstHostVolumeView
+BlockRep<MemorySpace::kDevice, GeomVoxel, Color>::host_dense_view(
+    std::optional<HostVolume>& staging) const {
+  const SparseVolumeSnapshot<GeomVoxel, Color> snapshot = host_snapshot();
+  const auto sparse = snapshot.view();
 
   staging.emplace(geometry_);
   auto dense = staging->view();
   for (const auto [x, y, z] : GridIndices{geometry_.resolution}) {
-    const std::size_t block = blocks_.block_of_voxel(x, y, z);
-    const std::uint32_t slot = grid_host[block];
-    if (slot == kUnallocatedBlock || slot >= used) {
+    const GeomVoxel* voxel = sparse.find_voxel(x, y, z);
+    if (voxel == nullptr) {
       continue;
     }
-    const std::size_t intra = BlockGrid::intra_of_voxel(x, y, z);
-    const GeomVoxel& voxel =
-        pool_host[(static_cast<std::size_t>(slot) * kVoxelBlockVolume) + intra];
     dense.voxel_at(x, y, z) =
-        Voxel{.distance = voxel.tsdf(), .weight = voxel.weight_value()};
+        Voxel{.distance = voxel->tsdf(), .weight = voxel->weight_value()};
     if constexpr (Color::kEnabled) {
-      dense.color_at(x, y, z) =
-          color_host[(static_cast<std::size_t>(slot) * kVoxelBlockVolume) +
-                     intra];
+      dense.color_at(x, y, z) = *sparse.find_color_voxel(x, y, z);
     }
   }
   return staging->view();

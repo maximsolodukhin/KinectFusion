@@ -2,6 +2,7 @@
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
+#include <cstddef>
 #include <expected>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/grid.hpp>
@@ -88,7 +89,11 @@ IcpOutcome ProjectiveIcpTracker::estimate_device_loop(
       .min_update_translation = options_.min_update_translation,
       .min_update_rotation = options_.min_update_rotation,
       .max_update_translation = options_.max_update_translation,
-      .max_update_rotation = options_.max_update_rotation};
+      .max_update_rotation = options_.max_update_rotation,
+      .damping = options_.damping,
+      .schedule = options_.schedule,
+      .adaptive_damping =
+          options_.damping.active() && options_.adaptive_damping};
 
   const DeviceIcpLoopResult loop = std::visit(
       [&](auto& sweep) {
@@ -106,8 +111,12 @@ IcpOutcome ProjectiveIcpTracker::estimate_device_loop(
         loop.equations.distance_sum / static_cast<float>(loop.equations.count);
   }
 
+  outcome.diagnostics.mean_squared_residual =
+      loop.equations.mean_squared_residual();
   outcome.diagnostics.update_translation = loop.update_translation;
   outcome.diagnostics.update_rotation = loop.update_rotation;
+  outcome.diagnostics.damping_lambda = loop.lambda;
+  outcome.diagnostics.rejected_steps = static_cast<std::size_t>(loop.rejected);
 
   const RigidTransform& camera = loop.transforms.camera;
   Eigen::Matrix4f pose = Eigen::Matrix4f::Identity();
@@ -142,7 +151,7 @@ IcpOutcome ProjectiveIcpTracker::estimate_device_loop(
   outcome.diagnostics.min_system_eigenvalue = stability.min_eigenvalue;
   outcome.diagnostics.condition_number = stability.condition_number;
 
-  if (!stability.stable) {
+  if (!stability.stable && !options_.damping.active()) {
     outcome.result = std::unexpected(IcpFailure::kUnconstrainedSystem);
     return outcome;
   }
@@ -208,12 +217,20 @@ IcpOutcome ProjectiveIcpTracker::estimate_with(
 
   const Eigen::Matrix4f model_world_to_camera =
       request.model_camera_to_world.inverse();
+  const bool adaptive = options_.damping.active() && options_.adaptive_damping;
+
+  float lambda = options_.damping.lambda;
+  float best_cost = 0.0F;
+  Eigen::Matrix4f best_pose = outcome.pose;
+  IcpNormalEquations best_equations{};
+  bool have_best = false;
+
   for (unsigned int iteration = 0; iteration < request.iterations;
        ++iteration) {
     const IcpIterationTransforms transforms =
         IcpIterationTransforms::from_poses(outcome.pose, model_world_to_camera);
 
-    const auto equations = find_equations(transforms);
+    auto equations = find_equations(transforms);
     outcome.diagnostics.correspondences = equations.count;
     if (equations.count > 0) {
       outcome.diagnostics.mean_point_distance =
@@ -222,32 +239,54 @@ IcpOutcome ProjectiveIcpTracker::estimate_with(
     if (equations.count < options_.min_correspondences) {
       return fail(IcpFailure::kTooFewCorrespondences);
     }
+    outcome.diagnostics.mean_squared_residual =
+        equations.mean_squared_residual();
+
+    bool accepted = true;
+    if (adaptive) {
+      const float cost = equations.mean_squared_residual();
+      accepted = !have_best || cost <= best_cost;
+      if (accepted) {
+        have_best = true;
+        best_cost = cost;
+        best_pose = outcome.pose;
+        best_equations = equations;
+        lambda = options_.schedule.shrink(lambda);
+      } else {
+        ++outcome.diagnostics.rejected_steps;
+        outcome.pose = best_pose;
+        equations = best_equations;
+        lambda = options_.schedule.grow(lambda);
+      }
+    }
 
     const auto stability = check_system_stability(equations);
 
     outcome.diagnostics.min_system_eigenvalue = stability.min_eigenvalue;
     outcome.diagnostics.condition_number = stability.condition_number;
 
-    if (!stability.stable) {
+    if (!stability.stable && !options_.damping.active()) {
       return fail(IcpFailure::kUnconstrainedSystem);
     }
 
-    const auto increment = solve_increment(equations);
+    const auto increment = solve_increment(equations, lambda);
     if (!increment.solved) {
       return fail(IcpFailure::kSolveFailed);
     }
+    lambda = increment.lambda;
+    outcome.diagnostics.damping_lambda = lambda;
 
     outcome.diagnostics.update_translation = increment.update_translation;
     outcome.diagnostics.update_rotation = increment.update_rotation;
 
-    if (increment.update_translation > options_.max_update_translation ||
-        increment.update_rotation > options_.max_update_rotation) {
+    if (!within_update_caps(increment)) {
       return fail(IcpFailure::kUpdateTooLarge);
     }
 
     outcome.pose = increment.transform * outcome.pose;
 
-    if (increment.update_translation < options_.min_update_translation &&
+    if (accepted &&
+        increment.update_translation < options_.min_update_translation &&
         increment.update_rotation < options_.min_update_rotation) {
       outcome.result = IcpSuccess{
           Converged{.update_translation = increment.update_translation,
@@ -307,18 +346,8 @@ ProjectiveIcpTracker::check_system_stability(
       .condition_number = condition_number};
 }
 
-ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
-    const IcpNormalEquations& equations) const {
-  if (equations.count < options_.min_correspondences) {
-    return {};
-  }
-
-  const Eigen::Matrix<float, kIcpDof, 1> solution =
-      equations.matrix().ldlt().solve(equations.rhs());
-  if (!solution.allFinite()) {
-    return {};
-  }
-
+ProjectiveIcpTracker::Increment ProjectiveIcpTracker::increment_from_solution(
+    const Eigen::Matrix<float, kIcpDof, 1>& solution) {
   const Eigen::Vector3f angle_axis = solution.head<3>();
   const Eigen::Vector3f translation = solution.tail<3>();
 
@@ -333,6 +362,43 @@ ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
                    .update_translation = translation.norm(),
                    .update_rotation = angle,
                    .solved = true};
+}
+
+// Escalates lambda until the damped system yields a finite step inside the
+// update caps. The last attempt is returned either way, so the caller's caps
+// still decide the failure code.
+ProjectiveIcpTracker::Increment ProjectiveIcpTracker::solve_increment(
+    const IcpNormalEquations& equations, float lambda) const {
+  if (equations.count < options_.min_correspondences) {
+    return {};
+  }
+
+  const Eigen::Matrix<float, kIcpDof, kIcpDof> base = equations.matrix();
+  const Eigen::Matrix<float, kIcpDof, 1> rhs = equations.rhs();
+  const unsigned int attempts =
+      options_.damping.active() ? kMaxIcpDampingEscalations : 1U;
+
+  Increment last{};
+  float scale = lambda;
+  for (unsigned int attempt = 0; attempt < attempts; ++attempt) {
+    Eigen::Matrix<float, kIcpDof, kIcpDof> damped = base;
+    for (std::size_t row = 0; row < kIcpDof; ++row) {
+      const auto index = static_cast<Eigen::Index>(row);
+      damped(index, index) +=
+          options_.damping.diagonal_offset(equations.diagonal(row), scale);
+    }
+
+    const Eigen::Matrix<float, kIcpDof, 1> solution = damped.ldlt().solve(rhs);
+    if (solution.allFinite()) {
+      last = increment_from_solution(solution);
+      last.lambda = scale;
+      if (!options_.damping.active() || within_update_caps(last)) {
+        return last;
+      }
+    }
+    scale = options_.schedule.grow(scale);
+  }
+  return last;
 }
 
 }  // namespace kinectfusion

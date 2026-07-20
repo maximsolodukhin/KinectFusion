@@ -168,6 +168,20 @@ kinectfusion::StorageLayout storage_layout_from_name(std::string_view name) {
        "' (expected 'dense' or 'sparse')");
 }
 
+kinectfusion::IcpDampingMode icp_damping_mode_from_name(std::string_view name) {
+  if (name == "none") {
+    return kinectfusion::IcpDampingMode::kNone;
+  }
+  if (name == "identity") {
+    return kinectfusion::IcpDampingMode::kIdentity;
+  }
+  if (name == "diagonal") {
+    return kinectfusion::IcpDampingMode::kDiagonal;
+  }
+  fail(std::string{"Unknown ICP damping mode '"} + std::string{name} +
+       "' (expected 'none', 'identity', or 'diagonal')");
+}
+
 kinectfusion::IntegrationMode integration_mode_from_name(
     std::string_view name) {
   if (name == "full") {

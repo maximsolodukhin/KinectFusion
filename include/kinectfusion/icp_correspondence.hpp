@@ -26,6 +26,13 @@ inline constexpr float kDefaultMaxIcpPointDistanceMeters = 0.05F;
 // cos(15 degrees); reject correspondences whose normals disagree by more.
 inline constexpr float kDefaultMinIcpNormalDot = 0.9659258F;
 
+inline constexpr float kDefaultIcpDampingLambda = 1.0e-3F;
+inline constexpr float kDefaultIcpLambdaIncrease = 10.0F;
+inline constexpr float kDefaultIcpLambdaDecrease = 0.1F;
+inline constexpr float kMinIcpLambda = 1.0e-9F;
+inline constexpr float kMaxIcpLambda = 1.0e6F;
+inline constexpr unsigned int kMaxIcpDampingEscalations = 8;
+
 // One accepted live-to-model correspondence, linearised for the point-plane
 // system: `jacobian` is its 6-DOF row, `residual` the point-plane error.
 struct IcpCorrespondence {
@@ -47,11 +54,57 @@ struct IcpCorrespondence {
 
 static_assert(std::is_trivially_copyable_v<IcpCorrespondence>);
 
+// kIdentity adds lambda * I. kDiagonal adds lambda * diag(J^T J).
+enum class IcpDampingMode : std::uint8_t { kNone, kIdentity, kDiagonal };
+
+struct IcpDamping {
+  IcpDampingMode mode{IcpDampingMode::kNone};
+  float lambda{kDefaultIcpDampingLambda};
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE bool active() const {
+    return mode != IcpDampingMode::kNone;
+  }
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float diagonal_offset(
+      float jtj_diagonal, float scale) const {
+    switch (mode) {
+      case IcpDampingMode::kIdentity:
+        return scale;
+      case IcpDampingMode::kDiagonal:
+        return scale * jtj_diagonal;
+      case IcpDampingMode::kNone:
+        break;
+    }
+    return 0.0F;
+  }
+};
+
+static_assert(std::is_trivially_copyable_v<IcpDamping>);
+
+struct IcpDampingSchedule {
+  float increase{kDefaultIcpLambdaIncrease};
+  float decrease{kDefaultIcpLambdaDecrease};
+  float min_lambda{kMinIcpLambda};
+  float max_lambda{kMaxIcpLambda};
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float grow(float lambda) const {
+    return compat::min(lambda * increase, max_lambda);
+  }
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float shrink(
+      float lambda) const {
+    return compat::max(lambda * decrease, min_lambda);
+  }
+};
+
+static_assert(std::is_trivially_copyable_v<IcpDampingSchedule>);
+
 // Accumulated point-plane normal equations (row-major upper triangle of
 // J^T J plus J^T r) and the correspondence statistics the diagnostics report.
 struct IcpNormalEquations {
   std::size_t count{};
   float distance_sum{};
+  float residual_sum_squares{};
   std::array<float, kIcpUpperTriangleSize> jtj{};
   std::array<float, kIcpDof> jtr{};
 
@@ -71,7 +124,29 @@ struct IcpNormalEquations {
     }
     // NOLINTEND(cppcoreguidelines-pro-bounds-constant-array-index)
     distance_sum += correspondence.distance;
+    residual_sum_squares += correspondence.residual * correspondence.residual;
     ++count;
+  }
+
+  // Projective association re-gates the correspondence set each trial, so the
+  // cost must be per-correspondence to stay comparable across trials.
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float mean_squared_residual()
+      const {
+    if (count == 0) {
+      return 0.0F;
+    }
+    return residual_sum_squares / static_cast<float>(count);
+  }
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE static std::size_t
+  triangle_entry(std::size_t row, std::size_t col) {
+    return (row * kIcpDof) - (row * (row + 1) / 2) + col;
+  }
+
+  [[nodiscard]] KINECTFUSION_FORCEINLINE_DEVICE float diagonal(
+      std::size_t row) const {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
+    return jtj[triangle_entry(row, row)];
   }
 
   [[nodiscard]] Eigen::Matrix<float, kIcpDof, kIcpDof> matrix() const {
@@ -247,11 +322,20 @@ struct DeviceIcpLoopParams {
   float min_update_rotation{};
   float max_update_translation{};
   float max_update_rotation{};
+  IcpDamping damping{};
+  IcpDampingSchedule schedule{};
+  bool adaptive_damping{};
 };
 
 struct DeviceIcpLoopResult {
   IcpIterationTransforms transforms{};
   IcpNormalEquations equations{};
+  // A rejected trial rolls the pose back to here.
+  RigidTransform best_camera{};
+  float best_cost{};
+  float lambda{};
+  std::int32_t trials{};
+  std::int32_t rejected{};
   float update_translation{};
   float update_rotation{};
   std::int32_t status{};  // 0 max-iters, 1 converged, 2 too few, 3 solve, 4 big

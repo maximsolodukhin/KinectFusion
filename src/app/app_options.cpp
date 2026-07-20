@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include <Eigen/Core>
 #include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
@@ -134,7 +135,10 @@ kinectfusion::ProjectiveIcpOptions AppOptions::icp_options() const {
       .device_graph_build = icp_capture_graph
                                 ? kinectfusion::IcpGraphBuild::kCaptured
                                 : kinectfusion::IcpGraphBuild::kExplicit,
-      .device_solve = icp_device_solve};
+      .device_solve = icp_device_solve,
+      .damping = {.mode = icp_damping_mode_from_name(icp_damping),
+                  .lambda = icp_lambda},
+      .adaptive_damping = icp_adaptive_damping};
 }
 
 unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
@@ -234,6 +238,17 @@ void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.add_flag("--icp-capture-graph", app_options.icp_capture_graph,
                "Ablation: record the device ICP reduction graph with stream "
                "capture. The default builds it with the explicit node API.");
+  app.add_option("--icp-damping", app_options.icp_damping,
+                 "ICP solver damping. 'none' is Gauss-Newton. 'identity' adds "
+                 "lambda*I (Levenberg). 'diagonal' adds lambda*diag(JtJ) "
+                 "(Marquardt). Damping replaces the eigenvalue veto.");
+  app.add_option("--icp-lambda", app_options.icp_lambda,
+                 "Initial damping lambda. Fixed unless "
+                 "--icp-adaptive-damping is set.");
+  app.add_flag("--icp-adaptive-damping", app_options.icp_adaptive_damping,
+               "Ablation: adapt lambda per trial and roll back trials that "
+               "raise the cost. Requires --icp-damping. This is the full "
+               "Levenberg-Marquardt driver.");
   app.add_flag("--projective-tsdf-distance,!--no-projective-tsdf-distance",
                app_options.projective_tsdf_distance,
                "Use the lambda-corrected projective TSDF distance. Disable "
@@ -330,6 +345,11 @@ void validate_options(const AppOptions& app_options) {
   require(app_options.bilateral_spatial_sigma > 0.0F &&
               app_options.bilateral_depth_sigma > 0.0F,
           "bilateral sigmas must be positive");
+  require(app_options.icp_lambda > 0.0F, "ICP lambda must be positive");
+  require(!app_options.icp_adaptive_damping ||
+              icp_damping_mode_from_name(app_options.icp_damping) !=
+                  kinectfusion::IcpDampingMode::kNone,
+          "--icp-adaptive-damping requires --icp-damping");
 }
 
 }  // namespace app

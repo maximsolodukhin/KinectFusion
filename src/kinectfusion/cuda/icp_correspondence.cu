@@ -18,7 +18,7 @@ static_assert(sizeof(std::size_t) == sizeof(unsigned long long));
 
 constexpr unsigned int kWarpSize = 32;
 constexpr unsigned int kFullWarpMask = 0xFFFFFFFFU;
-constexpr std::size_t kFloatSums = kIcpUpperTriangleSize + kIcpDof + 1;
+constexpr std::size_t kFloatSums = kIcpUpperTriangleSize + kIcpDof + 2;
 constexpr unsigned int kReduceBlock = 256;
 constexpr unsigned int kMaxReduceGrid = 1024;
 
@@ -46,6 +46,8 @@ __device__ void warp_reduce(IcpNormalEquations& local) {
     }
     local.distance_sum +=
         __shfl_down_sync(kFullWarpMask, local.distance_sum, offset);
+    local.residual_sum_squares +=
+        __shfl_down_sync(kFullWarpMask, local.residual_sum_squares, offset);
   }
 }
 
@@ -120,7 +122,8 @@ __global__ void reduce_correspondences_kernel(
       atomicAdd(&block_sums[slot++], local.jtr[entry]);
     }
 
-    atomicAdd(&block_sums[slot], local.distance_sum);
+    atomicAdd(&block_sums[slot++], local.distance_sum);
+    atomicAdd(&block_sums[slot], local.residual_sum_squares);
     atomicAdd(&block_count, warp_count);
   }
   __syncthreads();
@@ -135,14 +138,80 @@ __global__ void reduce_correspondences_kernel(
       atomicAdd(&result->jtr[entry], block_sums[slot++]);
     }
 
-    atomicAdd(&result->distance_sum, block_sums[slot]);
+    atomicAdd(&result->distance_sum, block_sums[slot++]);
+    atomicAdd(&result->residual_sum_squares, block_sums[slot]);
     atomicAdd(reinterpret_cast<unsigned long long*>(&result->count),
               block_count);
   }
 }
 
-// One thread: build the 6x6 SPD system, solve it, and compose the Rodrigues
-// increment onto the camera pose for the next reduce in the graph chain.
+// The 6x6 normal equations of one trial, factorised at a caller-chosen
+// damping scale. `mat` stays undamped so one load serves every escalation.
+struct DampedSystem {
+  float mat[kIcpDof][kIcpDof];
+  float rhs[kIcpDof];
+
+  __device__ void load(const IcpNormalEquations& equations) {
+    std::size_t entry = 0;
+    for (std::size_t row = 0; row < kIcpDof; ++row) {
+      for (std::size_t col = row; col < kIcpDof; ++col) {
+        mat[row][col] = equations.jtj[entry];
+        mat[col][row] = equations.jtj[entry];
+        ++entry;
+      }
+    }
+    for (std::size_t row = 0; row < kIcpDof; ++row) {
+      rhs[row] = equations.jtr[row];
+    }
+  }
+
+  // In-place Cholesky (LLT); non-positive pivot = solve failure.
+  __device__ bool solve(const IcpDamping& damping, float scale,
+                        float (&solution)[kIcpDof]) const {
+    float chol[kIcpDof][kIcpDof];
+    for (std::size_t row = 0; row < kIcpDof; ++row) {
+      for (std::size_t col = 0; col <= row; ++col) {
+        float sum = mat[row][col];
+        if (row == col) {
+          sum += damping.diagonal_offset(mat[row][row], scale);
+        }
+        for (std::size_t k = 0; k < col; ++k) {
+          sum -= chol[row][k] * chol[col][k];
+        }
+        if (row == col) {
+          if (sum <= 0.0F) {
+            return false;
+          }
+          chol[row][row] = sqrtf(sum);
+        } else {
+          chol[row][col] = sum / chol[col][col];
+        }
+      }
+    }
+
+    for (std::size_t row = 0; row < kIcpDof; ++row) {  // forward: L y = b
+      float sum = rhs[row];
+      for (std::size_t k = 0; k < row; ++k) {
+        sum -= chol[row][k] * solution[k];
+      }
+      solution[row] = sum / chol[row][row];
+    }
+
+    for (std::size_t row = kIcpDof; row-- > 0;) {  // backward: L^T x = y
+      float sum = solution[row];
+      for (std::size_t k = row + 1; k < kIcpDof; ++k) {
+        sum -= chol[k][row] * solution[k];
+      }
+      solution[row] = sum / chol[row][row];
+    }
+    return true;
+  }
+};
+
+// One thread: score the trial, damp and solve the 6x6 system, and compose the
+// Rodrigues increment onto the camera pose for the next reduce in the graph
+// chain. One graph iteration is one LM trial; a trial that raises the cost
+// rolls the pose back and grows lambda, which keeps the graph static.
 // Status latches: once set, later steps do nothing.
 __global__ void solve_update_kernel(const IcpNormalEquations* equations,
                                     DeviceCorrespondenceSearch* search,
@@ -151,66 +220,72 @@ __global__ void solve_update_kernel(const IcpNormalEquations* equations,
   if (result->status != 0) {
     return;
   }
-  const IcpNormalEquations& eq = *equations;
-  result->equations = eq;
-  if (eq.count < params.min_correspondences) {
+  const IcpNormalEquations& swept = *equations;
+  if (swept.count < params.min_correspondences) {
+    result->equations = swept;
     result->status = 2;
     return;
   }
 
-  float mat[kIcpDof][kIcpDof];
-  std::size_t entry = 0;
-
-  for (std::size_t row = 0; row < kIcpDof; ++row) {
-    for (std::size_t col = row; col < kIcpDof; ++col) {
-      mat[row][col] = eq.jtj[entry];
-      mat[col][row] = eq.jtj[entry];
-      ++entry;
-    }
+  if (result->trials == 0) {
+    result->lambda = params.damping.lambda;
   }
 
-  // In-place Cholesky (LLT); non-positive pivot = solve failure.
-  float chol[kIcpDof][kIcpDof];
-  for (std::size_t row = 0; row < kIcpDof; ++row) {
-    for (std::size_t col = 0; col <= row; ++col) {
-      float sum = mat[row][col];
-      for (std::size_t k = 0; k < col; ++k) {
-        sum -= chol[row][k] * chol[col][k];
-      }
-      if (row == col) {
-        if (sum <= 0.0F) {
-          result->status = 3;
-          return;
-        }
-        chol[row][row] = sqrtf(sum);
-      } else {
-        chol[row][col] = sum / chol[col][col];
-      }
+  bool accepted = true;
+  if (params.adaptive_damping) {
+    const float cost = swept.mean_squared_residual();
+    accepted = result->trials == 0 || cost <= result->best_cost;
+    if (accepted) {
+      result->best_cost = cost;
+      result->equations = swept;
+      result->best_camera = search->transforms_ref().camera;
+      result->lambda = params.schedule.shrink(result->lambda);
+    } else {
+      ++result->rejected;
+      search->transforms_ref().camera = result->best_camera;
+      result->lambda = params.schedule.grow(result->lambda);
     }
+  } else {
+    result->equations = swept;
   }
+  ++result->trials;
 
+  DampedSystem system;
+  system.load(result->equations);
+
+  const unsigned int attempts =
+      params.damping.active() ? kMaxIcpDampingEscalations : 1U;
   float solution[kIcpDof];
+  float scale = result->lambda;
+  float used_lambda = scale;
+  float update_translation = 0.0F;
+  float angle = 0.0F;
+  bool solved = false;
 
-  for (std::size_t row = 0; row < kIcpDof; ++row) {  // forward: L y = b
-    float sum = eq.jtr[row];
-    for (std::size_t k = 0; k < row; ++k) {
-      sum -= chol[row][k] * solution[k];
+  for (unsigned int attempt = 0; attempt < attempts; ++attempt) {
+    if (system.solve(params.damping, scale, solution)) {
+      solved = true;
+      used_lambda = scale;
+      angle = norm(make_vec3f(solution[0], solution[1], solution[2]));
+      update_translation =
+          norm(make_vec3f(solution[3], solution[4], solution[5]));
+      if (!params.damping.active() ||
+          (update_translation <= params.max_update_translation &&
+           angle <= params.max_update_rotation)) {
+        break;
+      }
     }
-    solution[row] = sum / chol[row][row];
+    scale = params.schedule.grow(scale);
   }
 
-  for (std::size_t row = kIcpDof; row-- > 0;) {  // backward: L^T x = y
-    float sum = solution[row];
-    for (std::size_t k = row + 1; k < kIcpDof; ++k) {
-      sum -= chol[k][row] * solution[k];
-    }
-    solution[row] = sum / chol[row][row];
+  if (!solved) {
+    result->status = 3;
+    return;
   }
+  result->lambda = used_lambda;
 
   const Vec3f axis_angle = make_vec3f(solution[0], solution[1], solution[2]);
   const Vec3f translation = make_vec3f(solution[3], solution[4], solution[5]);
-  const float angle = norm(axis_angle);
-  const float update_translation = norm(translation);
 
   result->update_translation = update_translation;
   result->update_rotation = angle;
@@ -261,7 +336,7 @@ __global__ void solve_update_kernel(const IcpNormalEquations* equations,
   camera.translation = (rot * camera.translation) + translation;
   result->transforms = search->transforms_ref();
 
-  if (update_translation < params.min_update_translation &&
+  if (accepted && update_translation < params.min_update_translation &&
       angle < params.min_update_rotation) {
     result->status = 1;
   }

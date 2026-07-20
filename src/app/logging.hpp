@@ -49,11 +49,14 @@ struct std::formatter<kinectfusion::IcpDiagnostics>
                      std::format_context& ctx) {
     return std::format_to(
         ctx.out(),
-        "correspondences={} mean_distance={} min_eigenvalue={} condition={} "
-        "update_translation={} update_rotation={}",
+        "correspondences={} mean_distance={} mean_squared_residual={} "
+        "min_eigenvalue={} condition={} update_translation={} "
+        "update_rotation={} lambda={} rejected={}",
         diagnostics.correspondences, diagnostics.mean_point_distance,
-        diagnostics.min_system_eigenvalue, diagnostics.condition_number,
-        diagnostics.update_translation, diagnostics.update_rotation);
+        diagnostics.mean_squared_residual, diagnostics.min_system_eigenvalue,
+        diagnostics.condition_number, diagnostics.update_translation,
+        diagnostics.update_rotation, diagnostics.damping_lambda,
+        diagnostics.rejected_steps);
   }
 };
 

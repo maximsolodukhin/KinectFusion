@@ -4,6 +4,7 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -139,6 +140,38 @@ struct SyntheticSurface {
           static_cast<std::size_t>(x);
       const auto normal = kinectfusion::normalized(normal_seeds.at(seed_index));
 
+      surface.live.vertices.at(x, y) = point;
+      surface.live.normals.at(x, y) = normal;
+      surface.model.points.at(x, y) = point;
+      surface.model.normals.at(x, y) = normal;
+    }
+  }
+
+  return surface;
+}
+
+// A single fronto-parallel plane. Point-to-plane leaves the two in-plane
+// translations and the roll unconstrained, so Gauss-Newton sees a rank-3
+// system. This is the case damping exists to bound.
+[[nodiscard]] SyntheticSurface make_planar_surface(
+    const kinectfusion::CameraIntrinsics& intrinsics) {
+  constexpr unsigned int kWidth = 3;
+  constexpr unsigned int kHeight = 3;
+  SyntheticSurface surface{
+      .live = {.vertices =
+                   kinectfusion::image_proc::Vector3fImage{kWidth, kHeight},
+               .normals =
+                   kinectfusion::image_proc::Vector3fImage{kWidth, kHeight}},
+      .model = {
+          .points = kinectfusion::image_proc::Vector3fImage{kWidth, kHeight},
+          .normals = kinectfusion::image_proc::Vector3fImage{kWidth, kHeight},
+          .colors = kinectfusion::image_proc::ColorImage{kWidth, kHeight}}};
+
+  const kinectfusion::Vec3f normal{.x = 0.0F, .y = 0.0F, .z = -1.0F};
+  for (unsigned int y = 0; y < kHeight; ++y) {
+    for (unsigned int x = 0; x < kWidth; ++x) {
+      const auto point = kinectfusion::from_eigen(intrinsics.back_project(
+          Eigen::Vector2f{static_cast<float>(x), static_cast<float>(y)}, 1.0F));
       surface.live.vertices.at(x, y) = point;
       surface.live.normals.at(x, y) = normal;
       surface.model.points.at(x, y) = point;
@@ -906,6 +939,109 @@ TEST_CASE("Projective ICP recovers a small pose perturbation",
           Catch::Approx(0.0F).margin(kIcpPerturbationPoseTolerance));
   REQUIRE(result.diagnostics.mean_point_distance ==
           Catch::Approx(0.0F).margin(kIcpPerturbationDistanceTolerance));
+}
+
+TEST_CASE("Damped ICP recovers a small pose perturbation", "[projective_icp]") {
+  const auto mode = GENERATE(kinectfusion::IcpDampingMode::kIdentity,
+                             kinectfusion::IcpDampingMode::kDiagonal);
+  const bool adaptive = GENERATE(false, true);
+
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 100.0F, .fy = 100.0F, .cx = 1.0F, .cy = 1.0F};
+  const auto surface = make_identical_surface(intrinsics);
+
+  Eigen::Matrix4f initial = Eigen::Matrix4f::Identity();
+  initial.block<3, 3>(0, 0) =
+      Eigen::AngleAxisf(kIcpPerturbationAngle, Eigen::Vector3f::UnitZ())
+          .toRotationMatrix();
+  initial.block<3, 1>(0, 3) = Eigen::Vector3f{
+      kIcpPerturbationTx, kIcpPerturbationTy, kIcpPerturbationTz};
+
+  const kinectfusion::ProjectiveIcpTracker tracker{
+      kinectfusion::ProjectiveIcpOptions{
+          .min_correspondences = 6,
+          .max_point_distance = 0.1F,
+          .min_normal_dot = 0.9F,
+          .min_system_eigenvalue = 1.0e-12F,
+          .max_condition_number = 1.0e12F,
+          .damping = {.mode = mode, .lambda = 1.0e-4F},
+          .adaptive_damping = adaptive}};
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(surface.live), view(surface.model));
+  const auto result = tracker.estimate_pose({.surfaces = surfaces,
+                                             .model_intrinsics = intrinsics,
+                                             .initial_camera_to_world = initial,
+                                             .iterations = 25});
+
+  REQUIRE(result.result.has_value());
+  REQUIRE(result.diagnostics.correspondences == 9);
+  REQUIRE(result.diagnostics.damping_lambda > 0.0F);
+  REQUIRE((result.pose - Eigen::Matrix4f::Identity()).norm() ==
+          Catch::Approx(0.0F).margin(kIcpPerturbationPoseTolerance));
+}
+
+TEST_CASE("Damping solves a planar system Gauss-Newton vetoes",
+          "[projective_icp]") {
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 100.0F, .fy = 100.0F, .cx = 1.0F, .cy = 1.0F};
+  const auto surface = make_planar_surface(intrinsics);
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(surface.live), view(surface.model));
+
+  kinectfusion::ProjectiveIcpOptions options{.min_correspondences = 6,
+                                             .max_point_distance = 0.1F,
+                                             .min_normal_dot = 0.9F};
+
+  const kinectfusion::ProjectiveIcpTracker gauss_newton{options};
+  const auto vetoed = gauss_newton.estimate_pose(
+      surfaces, intrinsics, Eigen::Matrix4f::Identity(), 3);
+  REQUIRE_FALSE(vetoed.result.has_value());
+  REQUIRE(vetoed.result.error() ==
+          kinectfusion::IcpFailure::kUnconstrainedSystem);
+
+  options.damping = {.mode = kinectfusion::IcpDampingMode::kDiagonal,
+                     .lambda = 1.0e-3F};
+  const kinectfusion::ProjectiveIcpTracker damped{options};
+  const auto solved = damped.estimate_pose(surfaces, intrinsics,
+                                           Eigen::Matrix4f::Identity(), 3);
+  REQUIRE(solved.result.has_value());
+  REQUIRE(solved.diagnostics.correspondences == 9);
+}
+
+TEST_CASE("Adaptive damping shrinks lambda while trials are accepted",
+          "[projective_icp]") {
+  constexpr float kInitialLambda = 1.0e-2F;
+  const kinectfusion::CameraIntrinsics intrinsics{
+      .fx = 100.0F, .fy = 100.0F, .cx = 1.0F, .cy = 1.0F};
+  const auto surface = make_identical_surface(intrinsics);
+  const auto surfaces = kinectfusion::HostTrackingSurfaces::from_render(
+      view(surface.live), view(surface.model));
+
+  const kinectfusion::ProjectiveIcpTracker tracker{
+      kinectfusion::ProjectiveIcpOptions{
+          .min_correspondences = 6,
+          .max_point_distance = 0.1F,
+          .min_normal_dot = 0.9F,
+          .min_system_eigenvalue = 1.0e-12F,
+          .max_condition_number = 1.0e12F,
+          .damping = {.mode = kinectfusion::IcpDampingMode::kIdentity,
+                      .lambda = kInitialLambda},
+          .adaptive_damping = true}};
+
+  Eigen::Matrix4f initial = Eigen::Matrix4f::Identity();
+  initial.block<3, 1>(0, 3) = Eigen::Vector3f{
+      kIcpPerturbationTx, kIcpPerturbationTy, kIcpPerturbationTz};
+
+  const auto result = tracker.estimate_pose({.surfaces = surfaces,
+                                             .model_intrinsics = intrinsics,
+                                             .initial_camera_to_world = initial,
+                                             .iterations = 25});
+
+  REQUIRE(result.result.has_value());
+  REQUIRE(result.diagnostics.rejected_steps == 0);
+  REQUIRE(result.diagnostics.damping_lambda < kInitialLambda);
+  REQUIRE((result.pose - Eigen::Matrix4f::Identity()).norm() ==
+          Catch::Approx(0.0F).margin(kIcpPerturbationPoseTolerance));
 }
 
 TEST_CASE("Projective ICP rejects empty correspondence sets",

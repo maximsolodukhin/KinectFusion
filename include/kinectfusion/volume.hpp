@@ -11,6 +11,7 @@
 #include <kinectfusion/image_proc/image.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
+#include <kinectfusion/view.hpp>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -222,12 +223,9 @@ struct SurfaceMaps {
 // std::span.
 template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false>
 struct SurfaceMapsView {
-  template <typename T>
-  using Pointee = std::conditional_t<IsConst, const T, T>;
-
-  image_proc::ImageView<Pointee<Vec3f>, Space> points;
-  image_proc::ImageView<Pointee<Vec3f>, Space> normals;
-  image_proc::ImageView<Pointee<std::uint32_t>, Space> colors;
+  image_proc::ImageView<Pointee<IsConst, Vec3f>, Space> points;
+  image_proc::ImageView<Pointee<IsConst, Vec3f>, Space> normals;
+  image_proc::ImageView<Pointee<IsConst, std::uint32_t>, Space> colors;
 
   static constexpr MemorySpace kMemorySpace = Space;
 
@@ -237,7 +235,7 @@ struct SurfaceMapsView {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE
   // NOLINTNEXTLINE(hicpp-explicit-conversions)
   operator SurfaceMapsView<Space, TargetConst>() const {
-    return {.points = points, .normals = normals, .colors = colors};
+    return ViewCast::to_const<SurfaceMapsView<Space, TargetConst>>(*this);
   }
 };
 
@@ -293,14 +291,11 @@ struct VolumeGeometry {
 template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false,
           typename GeomVoxel = Voxel, typename Color = FloatColorFacet>
 struct VolumeView {
-  template <typename T>
-  using Pointee = std::conditional_t<IsConst, const T, T>;
-
   using GeometryVoxel = GeomVoxel;
   using ColorFacet = Color;
 
-  Pointee<GeomVoxel>* voxels{};
-  Pointee<typename Color::Voxel>* colors{};
+  Pointee<IsConst, GeomVoxel>* voxels{};
+  Pointee<IsConst, typename Color::Voxel>* colors{};
   VolumeGeometry geometry{};
 
   static constexpr MemorySpace kMemorySpace = Space;
@@ -326,8 +321,8 @@ struct VolumeView {
   }
 
   // Flat element access for coordinate-free sweeps
-  [[nodiscard]] std::span<Pointee<GeomVoxel>> voxel_span() const {
-    return std::span<Pointee<GeomVoxel>>{voxels, voxel_count()};
+  [[nodiscard]] std::span<Pointee<IsConst, GeomVoxel>> voxel_span() const {
+    return std::span<Pointee<IsConst, GeomVoxel>>{voxels, voxel_count()};
   }
 
   [[nodiscard]] KINECTFUSION_HOST_DEVICE std::size_t index(
@@ -336,14 +331,15 @@ struct VolumeView {
   }
 
   // Raw pointers so views can cross into CUDA kernels, like ImageView.
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<GeomVoxel>& voxel_at(
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<IsConst, GeomVoxel>& voxel_at(
       std::size_t x, std::size_t y, std::size_t z) const {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return voxels[index(x, y, z)];
   }
 
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<typename Color::Voxel>&
-  color_at(std::size_t x, std::size_t y, std::size_t z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+      Pointee<IsConst, typename Color::Voxel>&
+      color_at(std::size_t x, std::size_t y, std::size_t z) const {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     return colors[index(x, y, z)];
   }
@@ -354,8 +350,8 @@ struct VolumeView {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE
   // NOLINTNEXTLINE(hicpp-explicit-conversions)
   operator VolumeView<Space, TargetConst, GeomVoxel, Color>() const {
-    return VolumeView<Space, TargetConst, GeomVoxel, Color>{
-        .voxels = voxels, .colors = colors, .geometry = geometry};
+    return ViewCast::to_const<VolumeView<Space, TargetConst, GeomVoxel, Color>>(
+        *this);
   }
 };
 

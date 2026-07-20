@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <kinectfusion/comparison.hpp>
+#include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
@@ -44,14 +45,14 @@ class PipelineSet {
   // unknown reference, or mismatched volume geometries.
   [[nodiscard]] static PipelineSet create(const PipelineSetConfig& config);
 
+  // On nullptr the set uploads the frame once for all device members.
   void integrate(const DepthFrame& frame,
                  const DeviceDepthFrame* shared_upload = nullptr);
 
   [[nodiscard]] SurfaceMaps raycast_reference(const RaycastCamera& camera);
 
-  // Tracking views from the reference pipeline, in its own memory space.
-  [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera, const LiveViewsVariant& live);
+  void track(const RaycastCamera& camera, const PyramidLevel& live,
+             TrackingSurfaceConsumer& consumer);
 
   // kDevice only when every member runs on the device
   // Decides where shared input processing runs.
@@ -87,7 +88,8 @@ class PipelineSet {
 
  private:
   PipelineSet(std::vector<Member> members, std::size_t reference_index,
-              int compare_every_n_frames);
+              int compare_every_n_frames,
+              std::unique_ptr<DepthUploader> uploader);
 
   [[nodiscard]] std::vector<PipelineComparison> compare_members(
       const std::vector<PipelineOutput>* outputs);
@@ -95,6 +97,8 @@ class PipelineSet {
   std::vector<Member> members_;
   std::size_t reference_index_{};
   int compare_every_n_frames_{};
+  // Null unless a member runs on the device.
+  std::unique_ptr<DepthUploader> uploader_;
 };
 
 }  // namespace kinectfusion

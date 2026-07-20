@@ -88,6 +88,25 @@ void PipelineSet::integrate(const DepthFrame& frame,
   }
 }
 
+void PipelineSet::integrate_member(std::size_t index, const DepthFrame& frame,
+                                   const DeviceDepthFrame* shared_upload) {
+  if (shared_upload == nullptr && uploader_ != nullptr) {
+    shared_upload = &uploader_->upload(frame);
+  }
+  members_.at(index).pipeline->integrate(frame, shared_upload);
+}
+
+void PipelineSet::track_member(std::size_t index, const RaycastCamera& camera,
+                               const PyramidLevel& live,
+                               TrackingSurfaceConsumer& consumer) {
+  members_.at(index).pipeline->track(camera, live, consumer);
+}
+
+SurfaceMaps PipelineSet::raycast_member(std::size_t index,
+                                        const RaycastCamera& camera) {
+  return members_.at(index).pipeline->raycast(camera);
+}
+
 SurfaceMaps PipelineSet::raycast_reference(const RaycastCamera& camera) {
   return members_.at(reference_index_).pipeline->raycast(camera);
 }

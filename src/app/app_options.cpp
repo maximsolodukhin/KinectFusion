@@ -63,7 +63,10 @@ kinectfusion::PipelineConfig AppOptions::pipeline_config() const {
       .color = color_store_from_name(color_store),
       .raycast_backend = raycast_backend_from_name(raycast_backend),
       .storage = storage_layout_from_name(storage_layout),
-      .sparse_block_capacity = sparse_capacity};
+      .sparse_block_capacity = sparse_capacity,
+      .icp_damping = {.mode = icp_damping_mode_from_name(icp_damping),
+                      .lambda = icp_lambda},
+      .icp_adaptive_damping = icp_adaptive_damping};
 }
 
 kinectfusion::PipelineSetConfig AppOptions::pipeline_set_config() const {

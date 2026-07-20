@@ -87,6 +87,13 @@ template <typename T>
       config.integration.observation_weight = float_of(node, name);
     } else if (name == "max-weight") {
       config.integration.max_weight = float_of(node, name);
+    } else if (name == "icp-damping") {
+      config.icp_damping.mode =
+          icp_damping_mode_from_name(value_of<std::string>(node, name));
+    } else if (name == "icp-lambda") {
+      config.icp_damping.lambda = float_of(node, name);
+    } else if (name == "icp-adaptive-damping") {
+      config.icp_adaptive_damping = value_of<bool>(node, name);
     } else {
       fail(std::string{"Unknown pipeline config key '"} + std::string{name} +
            "'");

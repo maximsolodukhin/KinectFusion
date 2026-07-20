@@ -16,7 +16,8 @@ target_include_directories(kinectfusion_app_config PUBLIC ${CMAKE_CURRENT_SOURCE
 target_compile_features(kinectfusion_app_config PUBLIC cxx_std_${CMAKE_CXX_STANDARD})
 target_compile_definitions(kinectfusion_app_config PRIVATE KINECTFUSION_VERSION="${PROJECT_VERSION}")
 
-add_executable(kinectfusion_app main.cpp frame_output.cpp reconstruction.cpp)
+add_executable(kinectfusion_app main.cpp frame_output.cpp reconstruction.cpp
+                                trajectory_eval.cpp)
 
 set_target_properties(kinectfusion_app PROPERTIES OUTPUT_NAME kinectfusion)
 

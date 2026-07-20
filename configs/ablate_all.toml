@@ -10,7 +10,15 @@
 # The deviation statistics land in <output-dir>/ablation_stats.csv.
 # Expected: "bitmap-march" compares equal to the baseline, bit for bit.
 #
-# Some switches are global CLI flags, not pipeline keys. Ablate them with
+# Each pipeline tracks independently with its own ICP solver, so the damping
+# axis is a per-pipeline key. icp-damping replaces the eigenvalue veto:
+#   icp-damping           "none" (Gauss-Newton), "identity" (Levenberg,
+#                         lambda*I), or "diagonal" (Marquardt, lambda*diag(JtJ))
+#   icp-lambda            float, initial damping lambda (default 1e-3)
+#   icp-adaptive-damping  bool, full Levenberg-Marquardt (adapt lambda, roll
+#                         back trials that raise the cost)
+#
+# Some switches are still global CLI flags, not pipeline keys. Ablate them with
 # separate runs:
 #   --cell-normals --raycast-seed-previous --raycast-tsdf-from-valid-corners
 #   --icp-device-solve --icp-capture-graph
@@ -23,6 +31,21 @@ compare-every-n-frames = 10
 
 [[pipeline]]
 name = "baseline"
+
+# --- ICP solver (each pipeline tracks with its own damping) ---
+
+[[pipeline]]
+name = "levenberg"
+icp-damping = "identity"
+
+[[pipeline]]
+name = "marquardt"
+icp-damping = "diagonal"
+
+[[pipeline]]
+name = "levenberg-marquardt"
+icp-damping = "diagonal"
+icp-adaptive-damping = true
 
 # --- TSDF update rule ---
 

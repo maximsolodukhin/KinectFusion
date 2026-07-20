@@ -38,6 +38,11 @@ struct PipelineConfig {
   RaycastBackend raycast_backend{RaycastBackend::kMarch};
   StorageLayout storage{StorageLayout::kDense};
   std::size_t sparse_block_capacity{0};  // 0 = block_count / 4
+  // The tracker is per pipeline, so each ablates its own ICP solver. Only the
+  // damping axis varies here; the rest of the tracker tuning stays run-wide.
+  IcpDamping icp_damping{};
+  IcpDampingSchedule icp_schedule{};
+  bool icp_adaptive_damping{false};
 };
 
 // Keeps the tracker out of CUDA files: nvcc has no std::expected.

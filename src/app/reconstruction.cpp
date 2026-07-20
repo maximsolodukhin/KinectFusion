@@ -24,13 +24,16 @@
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <numeric>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
 #include "logging.hpp"
+#include "trajectory_eval.hpp"
 
 namespace app {
 namespace {
@@ -75,15 +78,31 @@ class IcpConsumer final : public kinectfusion::TrackingSurfaceConsumer {
 Reconstruction::Reconstruction(AppOptions options)
     : options_(std::move(options)),
       frame_output_(options_),
-      tracker_(options_.icp_options()),
-      pipelines_(
-          kinectfusion::PipelineSet::create(options_.pipeline_set_config())) {
+      set_config_(options_.pipeline_set_config()),
+      pipelines_(kinectfusion::PipelineSet::create(set_config_)),
+      tracks_(make_tracks(set_config_)) {
   auto creation = kinectfusion::PyramidSource::create(pipelines_.common_space(),
                                                       options_.depth_options());
   if (!creation.fallback_reason.empty()) {
     log_warn("Depth pyramid: {}", creation.fallback_reason);
   }
   pyramid_source_ = std::move(creation.source);
+}
+
+std::vector<Reconstruction::Track> Reconstruction::make_tracks(
+    const kinectfusion::PipelineSetConfig& config) const {
+  std::vector<Track> tracks;
+  tracks.reserve(config.pipelines.size());
+  for (const kinectfusion::PipelineConfig& pipeline : config.pipelines) {
+    kinectfusion::ProjectiveIcpOptions icp = options_.icp_options();
+    icp.damping = pipeline.icp_damping;
+    icp.schedule = pipeline.icp_schedule;
+    icp.adaptive_damping = pipeline.icp_adaptive_damping;
+    Track track;
+    track.tracker = kinectfusion::ProjectiveIcpTracker{icp};
+    tracks.push_back(std::move(track));
+  }
+  return tracks;
 }
 
 int Reconstruction::run() {
@@ -102,7 +121,8 @@ int Reconstruction::run() {
   const std::chrono::duration<double> loop_seconds =
       std::chrono::steady_clock::now() - loop_start;
 
-  write_trajectory();
+  write_trajectories();
+  report_ate();
   if (options_.write_mesh) {
     write_meshes();
   }
@@ -146,7 +166,9 @@ bool Reconstruction::initialize() {
       "Frame {}: integrating first depth frame into TSDF volume ({}^3 "
       "voxels)",
       sensor_.current_frame_index(), options_.volume_resolution);
-  integrate_frame();
+  std::vector<std::size_t> all_members(tracks_.size());
+  std::ranges::iota(all_members, std::size_t{0});
+  integrate_members(all_members);
 
   log_info("Frame {}: raycasting initialized model",
            sensor_.current_frame_index());
@@ -154,7 +176,7 @@ bool Reconstruction::initialize() {
 
   log_info("Initialized reconstruction from frame 0: observed voxels={}",
            pipelines_.reference().observed_voxel_count());
-  trajectory_.emplace_back(sensor_.current_timestamp(), camera_to_world_);
+  record_trajectory();
 
   return true;
 }
@@ -172,44 +194,51 @@ void Reconstruction::process_frame() {
   log_info("Frame {}: built {} live pyramid level(s)",
            sensor_.current_frame_index(), levels);
 
-  const auto tracking = track_pose(levels);
-  if (tracking.result) {
-    integrate_tracked_frame(tracking);
-  } else {
-    relocalize(tracking);
+  // Each pipeline tracks against its own model, then only the pipelines that
+  // tracked integrate this frame (a rejected one keeps its last good pose).
+  std::vector<std::size_t> tracked;
+  tracked.reserve(tracks_.size());
+  for (std::size_t member = 0; member < tracks_.size(); ++member) {
+    const auto tracking = track_pose(member, levels);
+    tracks_.at(member).camera_to_world = tracking.pose;
+    if (tracking.result) {
+      finish_relocalization(member, tracking);
+      tracked.push_back(member);
+    } else {
+      relocalize(member, tracking);
+    }
   }
-  trajectory_.emplace_back(sensor_.current_timestamp(), camera_to_world_);
+
+  integrate_members(tracked);
+  render_model_outputs();
+  record_trajectory();
   ++processed_frames_;
 }
 
-kinectfusion::IcpOutcome Reconstruction::track_pose(std::size_t levels) {
+kinectfusion::IcpOutcome Reconstruction::track_pose(std::size_t member,
+                                                    std::size_t levels) {
+  const Track& track = tracks_.at(member);
   kinectfusion::IcpOutcome tracking;
-  tracking.pose = camera_to_world_;
-  auto tracked_pose = camera_to_world_;
+  tracking.pose = track.camera_to_world;
+  auto tracked_pose = track.camera_to_world;
 
-  log_info("Frame {}: tracking pose with projective ICP",
-           sensor_.current_frame_index());
+  log_info("Frame {} pipeline {}: tracking pose with projective ICP",
+           sensor_.current_frame_index(), member);
 
   for (std::size_t level_index = levels; level_index-- > 0;) {
     const auto level = static_cast<unsigned int>(level_index);
-    log_info("Frame {} level {}: raycasting model prediction",
-             sensor_.current_frame_index(), level);
-
     const auto camera =
         AppOptions::raycast_camera(sensor_, tracked_pose, level);
     const auto pyramid_level = pyramid_source_->level(level_index);
     const unsigned int iterations = options_.icp_iterations_for_level(level);
 
-    log_info("Frame {} level {}: running ICP (iterations={})",
-             sensor_.current_frame_index(), level, iterations);
-
-    IcpConsumer consumer{tracker_, pyramid_level.intrinsics, tracked_pose,
+    IcpConsumer consumer{track.tracker, pyramid_level.intrinsics, tracked_pose,
                          iterations};
-    pipelines_.track(camera, pyramid_level, consumer);
+    pipelines_.track_member(member, camera, pyramid_level, consumer);
     tracking = consumer.outcome();
 
-    log_info("Frame {} level {}: ICP result={} {}",
-             sensor_.current_frame_index(), level,
+    log_info("Frame {} pipeline {} level {}: ICP result={} {}",
+             sensor_.current_frame_index(), member, level,
              tracking.result ? "accepted" : "rejected", tracking.diagnostics);
 
     tracked_pose = tracking.pose;
@@ -220,54 +249,56 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(std::size_t levels) {
   return tracking;
 }
 
-void Reconstruction::integrate_tracked_frame(
-    const kinectfusion::IcpOutcome& tracking) {
-  if (relocalizing_) {
-    log_info("Relocalized at frame {} after {} frame(s): {}",
-             sensor_.current_frame_index(), relocalization_frames_,
-             tracking.diagnostics);
-    relocalizing_ = false;
-    relocalization_frames_ = 0;
+void Reconstruction::finish_relocalization(
+    std::size_t member, const kinectfusion::IcpOutcome& tracking) {
+  Track& track = tracks_.at(member);
+  if (!track.relocalizing) {
+    return;
   }
-
-  camera_to_world_ = tracking.pose;
-
-  log_info("Frame {}: integrating tracked depth frame into TSDF volume",
-           sensor_.current_frame_index());
-  integrate_frame();
-
-  log_info("Frame {}: raycasting updated model", sensor_.current_frame_index());
-  render_model_outputs();
-
-  log_info("Frame {} integrated: {} observed_voxels={}",
-           sensor_.current_frame_index(), tracking.diagnostics,
-           pipelines_.reference().observed_voxel_count());
+  log_info("Pipeline {} relocalized at frame {} after {} frame(s): {}", member,
+           sensor_.current_frame_index(), track.relocalization_frames,
+           tracking.diagnostics);
+  track.relocalizing = false;
+  track.relocalization_frames = 0;
 }
 
-void Reconstruction::integrate_frame() {
-  const kinectfusion::DepthFrame frame{
-      .depth = &sensor_.depth_image(),
-      .color = &sensor_.color_image(),
-      .normals = pyramid_source_->host_normals(),
-      .intrinsics = sensor_.depth_intrinsics(),
-      .world_to_camera = camera_to_world_.inverse()};
-  pipelines_.integrate(frame, pyramid_source_->device_frame(frame));
+void Reconstruction::integrate_members(
+    const std::vector<std::size_t>& members) {
+  kinectfusion::DepthFrame frame{.depth = &sensor_.depth_image(),
+                                 .color = &sensor_.color_image(),
+                                 .normals = pyramid_source_->host_normals(),
+                                 .intrinsics = sensor_.depth_intrinsics()};
+  const kinectfusion::DeviceDepthFrame* upload =
+      pyramid_source_->device_frame(frame);
+  for (const std::size_t member : members) {
+    frame.world_to_camera = tracks_.at(member).camera_to_world.inverse();
+    pipelines_.integrate_member(member, frame, upload);
+  }
 }
 
-void Reconstruction::relocalize(const kinectfusion::IcpOutcome& tracking) {
-  if (!relocalizing_) {
-    log_warn("Entering relocalization mode at frame {}",
+void Reconstruction::relocalize(std::size_t member,
+                                const kinectfusion::IcpOutcome& tracking) {
+  Track& track = tracks_.at(member);
+  if (!track.relocalizing) {
+    log_warn("Pipeline {} entering relocalization mode at frame {}", member,
              sensor_.current_frame_index());
   }
-  relocalizing_ = true;
-  ++relocalization_frames_;
-  log_warn("Frame {} tracking rejected: status={} {}",
-           sensor_.current_frame_index(), tracking.result.error(),
+  track.relocalizing = true;
+  ++track.relocalization_frames;
+  log_warn("Frame {} pipeline {} tracking rejected: status={} {}",
+           sensor_.current_frame_index(), member, tracking.result.error(),
            tracking.diagnostics);
   if (options_.interactive_relocalization) {
     std::cerr << "Relocalization paused. Align the live sensor with the "
                  "last model prediction and press Enter.\n";
     std::cin.get();
+  }
+}
+
+void Reconstruction::record_trajectory() {
+  const double timestamp = sensor_.current_timestamp();
+  for (Track& track : tracks_) {
+    track.trajectory.emplace_back(timestamp, track.camera_to_world);
   }
 }
 
@@ -282,7 +313,10 @@ void Reconstruction::render_model_outputs() {
       !pipelines_.should_compare(frame_index)) {
     return;
   }
-  const auto camera = AppOptions::raycast_camera(sensor_, camera_to_world_, 0);
+  // Every pipeline is rendered from the reference pose so the surface
+  // comparison and the written frames share one viewpoint.
+  const auto camera =
+      AppOptions::raycast_camera(sensor_, reference_track().camera_to_world, 0);
 
   log_info("Frame {}: writing outputs to {}", frame_index,
            options_.output_dir.string());
@@ -322,26 +356,66 @@ void Reconstruction::log_pipelines() const {
 }
 
 // TUM trajectory format (timestamp tx ty tz qx qy qz qw), evaluated against
-// the dataset groundtruth by scripts/evaluate_ate.py.
-void Reconstruction::write_trajectory() const {
-  const auto path = options_.output_dir / "trajectory.txt";
-  std::error_code create_error;
-  std::filesystem::create_directories(options_.output_dir, create_error);
-  std::ofstream file{path};
-  if (!file) {
-    log_warn("Could not write trajectory to {}", path.string());
+// the dataset groundtruth by scripts/evaluate_ate.py. The reference pipeline
+// writes output_dir/trajectory.txt; the others write it under their own
+// subdirectory, mirroring how the raycasts are laid out.
+void Reconstruction::write_trajectories() const {
+  const auto& members = pipelines_.members();
+  for (std::size_t member = 0; member < tracks_.size(); ++member) {
+    const bool is_reference = member == reference_index();
+    const auto directory =
+        is_reference
+            ? options_.output_dir
+            : options_.output_dir / members.at(member).pipeline->name();
+    const auto path = directory / "trajectory.txt";
+
+    std::error_code create_error;
+    std::filesystem::create_directories(directory, create_error);
+    std::ofstream file{path};
+    if (!file) {
+      log_warn("Could not write trajectory to {}", path.string());
+      continue;
+    }
+    constexpr int kTimestampPrecision = 9;
+    file << std::setprecision(kTimestampPrecision);
+    for (const auto& [timestamp, pose] : tracks_.at(member).trajectory) {
+      const Eigen::Quaternionf rotation{
+          Eigen::Matrix3f{pose.block<3, 3>(0, 0)}};
+      file << std::fixed << timestamp << ' ' << pose(0, 3) << ' ' << pose(1, 3)
+           << ' ' << pose(2, 3) << ' ' << rotation.x() << ' ' << rotation.y()
+           << ' ' << rotation.z() << ' ' << rotation.w() << '\n';
+    }
+    log_info("Wrote {} trajectory poses to {}",
+             tracks_.at(member).trajectory.size(), path.string());
+  }
+}
+
+void Reconstruction::report_ate() const {
+  const AteEvaluator evaluator{options_.dataset_dir / "groundtruth.txt"};
+  if (!evaluator.has_groundtruth()) {
+    log_info("No groundtruth.txt in {}; skipping ATE",
+             options_.dataset_dir.string());
     return;
   }
-  constexpr int kTimestampPrecision = 9;
-  file << std::setprecision(kTimestampPrecision);
-  for (const auto& [timestamp, pose] : trajectory_) {
-    const Eigen::Quaternionf rotation{Eigen::Matrix3f{pose.block<3, 3>(0, 0)}};
-    file << std::fixed << timestamp << ' ' << pose(0, 3) << ' ' << pose(1, 3)
-         << ' ' << pose(2, 3) << ' ' << rotation.x() << ' ' << rotation.y()
-         << ' ' << rotation.z() << ' ' << rotation.w() << '\n';
+
+  const auto& members = pipelines_.members();
+  constexpr double kMetersToCm = 100.0;
+  for (std::size_t member = 0; member < tracks_.size(); ++member) {
+    const std::string& name = members.at(member).pipeline->name();
+    const auto stats = evaluator.evaluate(tracks_.at(member).trajectory);
+    if (!stats) {
+      std::cout << std::format("ATE {}: too few groundtruth associations\n",
+                               name);
+      continue;
+    }
+    // cout, not the logger, so the ablation summary shows without logging.
+    std::cout << std::format(
+        "ATE {}: pairs={} rmse={:.3f} cm mean={:.3f} cm median={:.3f} cm "
+        "max={:.3f} cm\n",
+        name, stats->pairs, stats->rmse * kMetersToCm,
+        stats->mean * kMetersToCm, stats->median * kMetersToCm,
+        stats->max_error * kMetersToCm);
   }
-  log_info("Wrote {} trajectory poses to {}", trajectory_.size(),
-           path.string());
 }
 
 void Reconstruction::write_meshes() const {

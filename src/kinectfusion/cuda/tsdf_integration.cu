@@ -5,6 +5,7 @@
 #include <kinectfusion/cuda/launch.cuh>
 #include <kinectfusion/registered_storages.hpp>
 #include <kinectfusion/tsdf_integration.cuh>
+#include <memory>
 #include <variant>
 
 #include "band_walk.cuh"
@@ -158,6 +159,26 @@ DeviceDepthFrameView DeviceDepthFrame::view() const {
                               .normals = normals_.view(),
                               .intrinsics = intrinsics_,
                               .world_to_camera = world_to_camera_};
+}
+
+namespace {
+
+class BasicDepthUploader final : public DepthUploader {
+ public:
+  [[nodiscard]] const DeviceDepthFrame& upload(
+      const DepthFrame& frame) override {
+    frame_.assign(frame);
+    return frame_;
+  }
+
+ private:
+  DeviceDepthFrame frame_;
+};
+
+}  // namespace
+
+std::unique_ptr<DepthUploader> DepthUploader::create() {
+  return std::make_unique<BasicDepthUploader>();
 }
 
 template <VoxelGridView VolumeViewT>

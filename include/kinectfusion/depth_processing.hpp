@@ -9,10 +9,10 @@
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
+#include <kinectfusion/view.hpp>
 #include <limits>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -300,11 +300,8 @@ using DeviceSurface = SurfaceFor<MemorySpace::kDevice>;
 // std::span.
 template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false>
 struct SurfaceView {
-  template <typename T>
-  using Pointee = std::conditional_t<IsConst, const T, T>;
-
-  image_proc::ImageView<Pointee<Vec3f>, Space> vertices;
-  image_proc::ImageView<Pointee<Vec3f>, Space> normals;
+  image_proc::ImageView<Pointee<IsConst, Vec3f>, Space> vertices;
+  image_proc::ImageView<Pointee<IsConst, Vec3f>, Space> normals;
 
   static constexpr MemorySpace kMemorySpace = Space;
 
@@ -314,7 +311,7 @@ struct SurfaceView {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE
   // NOLINTNEXTLINE(hicpp-explicit-conversions)
   operator SurfaceView<Space, TargetConst>() const {
-    return {.vertices = vertices, .normals = normals};
+    return ViewCast::to_const<SurfaceView<Space, TargetConst>>(*this);
   }
 };
 

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <kinectfusion/block_rep.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/marching_cubes.hpp>
@@ -10,10 +11,10 @@
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <kinectfusion/volume_representation.hpp>
 #include <memory>
 #include <optional>
 #include <string>
-#include <variant>
 
 namespace kinectfusion {
 
@@ -39,8 +40,21 @@ struct PipelineConfig {
   std::size_t sparse_block_capacity{0};  // 0 = block_count / 4
 };
 
-using TrackingSurfacesVariant =
-    std::variant<HostTrackingSurfaces, DeviceTrackingSurfaces>;
+// Keeps the tracker out of CUDA files: nvcc has no std::expected.
+class TrackingSurfaceConsumer {
+ public:
+  TrackingSurfaceConsumer(const TrackingSurfaceConsumer&) = delete;
+  TrackingSurfaceConsumer& operator=(const TrackingSurfaceConsumer&) = delete;
+  TrackingSurfaceConsumer(TrackingSurfaceConsumer&&) = delete;
+  TrackingSurfaceConsumer& operator=(TrackingSurfaceConsumer&&) = delete;
+  virtual ~TrackingSurfaceConsumer() = default;
+
+  virtual void consume(const HostTrackingSurfaces& surfaces) = 0;
+  virtual void consume(const DeviceTrackingSurfaces& surfaces) = 0;
+
+ protected:
+  TrackingSurfaceConsumer() = default;
+};
 
 class Pipeline {
  public:
@@ -51,22 +65,18 @@ class Pipeline {
   virtual ~Pipeline() = default;
 
   // Fuses one tracked depth frame into the pipeline's volume
-  virtual void integrate(const DepthFrame& frame) = 0;
+  void integrate(const DepthFrame& frame) { integrate(frame, nullptr); }
 
-  // `shared_upload` is the set-wide device upload slot for this frame: the
-  // first device pipeline publishes it, later ones reuse it, host pipelines
-  // ignore it.
+  // On nullptr the pipeline copies the frame itself. Host pipelines ignore
+  // `upload`.
   virtual void integrate(const DepthFrame& frame,
-                         const DeviceDepthFrame*& shared_upload) {
-    static_cast<void>(shared_upload);
-    integrate(frame);
-  }
+                         const DeviceDepthFrame* upload) = 0;
 
   [[nodiscard]] virtual SurfaceMaps raycast(const RaycastCamera& camera) = 0;
 
-  // Views stay valid until the next tracking_surfaces or raycast call.
-  [[nodiscard]] virtual TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera, const LiveViewsVariant& live) = 0;
+  // The surfaces are valid only during the call.
+  virtual void track(const RaycastCamera& camera, const PyramidLevel& live,
+                     TrackingSurfaceConsumer& consumer) = 0;
 
   [[nodiscard]] virtual std::size_t observed_voxel_count() const = 0;
 
@@ -113,6 +123,20 @@ class Pipeline {
       return with_color.template operator()<NoColorFacet>();
     }
     return with_color.template operator()<FloatColorFacet>();
+  }
+
+  // The skip backend is not an axis here: its data changes every frame.
+  template <MemorySpace Space, typename Pick>
+  [[nodiscard]] static auto visit_representation(const PipelineConfig& config,
+                                                 const Pick& pick) {
+    return visit_storage(
+        config, [&config, &pick]<TsdfVoxel GeomVoxel, typename Color>() {
+          if (config.storage == StorageLayout::kSparse) {
+            return pick
+                .template operator()<BlockRep<Space, GeomVoxel, Color>>();
+          }
+          return pick.template operator()<DenseRep<Space, GeomVoxel, Color>>();
+        });
   }
 
   // Throws std::invalid_argument on unsupported storage combinations.

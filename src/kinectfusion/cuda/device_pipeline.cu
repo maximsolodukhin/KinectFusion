@@ -37,20 +37,14 @@ class BasicDevicePipeline final : public Pipeline {
         integrator_(config.tsdf_rule, config.integration),
         raycaster_(config.raycast) {}
 
-  void integrate(const DepthFrame& frame) override {
-    const DeviceDepthFrame* own_upload = nullptr;
-    integrate(frame, own_upload);
-  }
-
   void integrate(const DepthFrame& frame,
-                 const DeviceDepthFrame*& shared_upload) override {
+                 const DeviceDepthFrame* upload) override {
     TsdfIntegrator::validate_frame(frame);
-    if (shared_upload == nullptr) {
+    if (upload == nullptr) {
       fallback_upload_.assign(frame);
-      shared_upload = &fallback_upload_;
+      upload = &fallback_upload_;
     }
-    rep_.integrate(shared_upload->view(), integrator_.options(),
-                   integrator_.rule());
+    rep_.integrate(upload->view(), integrator_.options(), integrator_.rule());
     if constexpr (FlatVoxelRepresentation<Rep>) {
       index_.rebuild(rep_.view());
     }
@@ -64,13 +58,14 @@ class BasicDevicePipeline final : public Pipeline {
     return maps.download();
   }
 
-  [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera, const LiveViewsVariant& live) override {
+  void track(const RaycastCamera& camera, const PyramidLevel& live,
+             TrackingSurfaceConsumer& consumer) override {
     Raycaster::validate_camera(camera);
     DeviceSurfaceMaps& model = surface_maps_for(camera.width, camera.height);
     render_model(camera, model);
 
-    return DeviceTrackingSurfaces::from_render(device_live(live), model.view());
+    consumer.consume(DeviceTrackingSurfaces::from_render(
+        device_live(live.surface), model.view()));
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
@@ -167,19 +162,6 @@ class BasicDevicePipeline final : public Pipeline {
   std::map<MapExtent, DeviceSurface> live_maps_;
 };
 
-// The device half of the registry, mirroring create_host.
-template <TsdfVoxel GeomVoxel, typename Color>
-std::unique_ptr<Pipeline> make_device(const PipelineConfig& config) {
-  if (config.storage == StorageLayout::kSparse) {
-    return std::make_unique<
-        BasicDevicePipeline<BlockRep<MemorySpace::kDevice, GeomVoxel, Color>>>(
-        config);
-  }
-  return std::make_unique<
-      BasicDevicePipeline<DenseRep<MemorySpace::kDevice, GeomVoxel, Color>>>(
-      config);
-}
-
 }  // namespace
 
 bool Pipeline::device_available() {
@@ -189,10 +171,10 @@ bool Pipeline::device_available() {
 
 std::unique_ptr<Pipeline> Pipeline::create_device(
     const PipelineConfig& config) {
-  return visit_storage(config,
-                       [&config]<TsdfVoxel GeomVoxel, typename Color>() {
-                         return make_device<GeomVoxel, Color>(config);
-                       });
+  return visit_representation<MemorySpace::kDevice>(
+      config, [&config]<typename Rep>() -> std::unique_ptr<Pipeline> {
+        return std::make_unique<BasicDevicePipeline<Rep>>(config);
+      });
 }
 
 }  // namespace kinectfusion

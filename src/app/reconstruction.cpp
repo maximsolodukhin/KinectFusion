@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 // Eigen/Core declares MatrixBase::inverse(); Eigen/LU defines it.
+#include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <Eigen/LU>  // NOLINT(misc-include-cleaner)
 #include <chrono>
@@ -14,21 +15,62 @@
 #include <iomanip>
 #include <iostream>
 #include <kinectfusion/depth_processing.hpp>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/marching_cubes.hpp>
+#include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
+#include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
 #include <string>
 #include <system_error>
 #include <utility>
-#include <variant>
 
 #include "app_options.hpp"
 #include "frame_output.hpp"
 #include "logging.hpp"
 
 namespace app {
+namespace {
+
+class IcpConsumer final : public kinectfusion::TrackingSurfaceConsumer {
+ public:
+  IcpConsumer(const kinectfusion::ProjectiveIcpTracker& tracker,
+              const kinectfusion::CameraIntrinsics& model_intrinsics,
+              Eigen::Matrix4f model_pose, unsigned int iterations)
+      : tracker_(tracker),
+        model_intrinsics_(model_intrinsics),
+        model_pose_(std::move(model_pose)),
+        iterations_(iterations) {}
+
+  void consume(const kinectfusion::HostTrackingSurfaces& surfaces) override {
+    estimate(surfaces);
+  }
+  void consume(const kinectfusion::DeviceTrackingSurfaces& surfaces) override {
+    estimate(surfaces);
+  }
+
+  [[nodiscard]] const kinectfusion::IcpOutcome& outcome() const {
+    return outcome_;
+  }
+
+ private:
+  template <kinectfusion::MemorySpace Space>
+  void estimate(const kinectfusion::TrackingSurfaces<Space>& surfaces) {
+    outcome_ = tracker_.estimate_pose(surfaces, model_intrinsics_, model_pose_,
+                                      iterations_);
+  }
+
+  const kinectfusion::ProjectiveIcpTracker& tracker_;
+  kinectfusion::CameraIntrinsics model_intrinsics_;
+  Eigen::Matrix4f model_pose_;
+  unsigned int iterations_;
+  kinectfusion::IcpOutcome outcome_;
+};
+
+}  // namespace
 
 Reconstruction::Reconstruction(AppOptions options)
     : options_(std::move(options)),
@@ -161,12 +203,10 @@ kinectfusion::IcpOutcome Reconstruction::track_pose(std::size_t levels) {
     log_info("Frame {} level {}: running ICP (iterations={})",
              sensor_.current_frame_index(), level, iterations);
 
-    tracking = std::visit(
-        [&](const auto& surfaces) {
-          return tracker_.estimate_pose(surfaces, pyramid_level.intrinsics,
-                                        tracked_pose, iterations);
-        },
-        pipelines_.tracking_surfaces(camera, pyramid_level.surface));
+    IcpConsumer consumer{tracker_, pyramid_level.intrinsics, tracked_pose,
+                         iterations};
+    pipelines_.track(camera, pyramid_level, consumer);
+    tracking = consumer.outcome();
 
     log_info("Frame {} level {}: ICP result={} {}",
              sensor_.current_frame_index(), level,

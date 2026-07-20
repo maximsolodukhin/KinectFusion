@@ -12,6 +12,7 @@
 #include <kinectfusion/rgbd.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
 #include <variant>
 #include <vector>
 
@@ -90,6 +91,26 @@ struct DepthFrame {
 // One frame's device upload, shared across the device pipelines of a set as
 // a borrowed pointer. Check CUDA backend.
 class DeviceDepthFrame;
+
+// Keeps its device buffers between frames.
+class DepthUploader {
+ public:
+  DepthUploader(const DepthUploader&) = delete;
+  DepthUploader& operator=(const DepthUploader&) = delete;
+  DepthUploader(DepthUploader&&) = delete;
+  DepthUploader& operator=(DepthUploader&&) = delete;
+  virtual ~DepthUploader() = default;
+
+  // Valid until the next call.
+  [[nodiscard]] virtual const DeviceDepthFrame& upload(
+      const DepthFrame& frame) = 0;
+
+  // Throws std::logic_error without CUDA.
+  [[nodiscard]] static std::unique_ptr<DepthUploader> create();
+
+ protected:
+  DepthUploader() = default;
+};
 
 struct VoxelObservation {
   Pixel pixel{};

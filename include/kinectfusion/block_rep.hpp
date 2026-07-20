@@ -9,11 +9,11 @@
 #include <kinectfusion/trilinear.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/vector.hpp>
+#include <kinectfusion/view.hpp>
 #include <kinectfusion/volume.hpp>
 #include <kinectfusion/volume_representation.hpp>
 #include <kinectfusion/volume_sampler.hpp>
 #include <optional>
-#include <type_traits>
 #include <vector>
 
 namespace kinectfusion {
@@ -26,15 +26,13 @@ inline constexpr std::uint32_t kUnallocatedBlock = 0xFFFFFFFFU;
 template <MemorySpace Space = MemorySpace::kHost, bool IsConst = false,
           typename GeomVoxel = Voxel, typename Color = FloatColorFacet>
 struct SparseVolumeView {
-  template <typename T>
-  using Pointee = std::conditional_t<IsConst, const T, T>;
-
   using GeometryVoxel = GeomVoxel;
   using ColorFacet = Color;
 
-  Pointee<std::uint32_t>* grid{};  // pool slot per block, or kUnallocatedBlock
-  Pointee<GeomVoxel>* pool{};
-  Pointee<typename Color::Voxel>* color_pool{};
+  // One pool slot per block, or kUnallocatedBlock.
+  Pointee<IsConst, std::uint32_t>* grid{};
+  Pointee<IsConst, GeomVoxel>* pool{};
+  Pointee<IsConst, typename Color::Voxel>* color_pool{};
   VolumeGeometry geometry{};
   BlockGrid blocks;
   std::uint32_t capacity{};
@@ -65,22 +63,24 @@ struct SparseVolumeView {
 
   // Pointer to the voxel of an in-bounds coordinate, or nullptr when its
   // block is not allocated.
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<GeomVoxel>* find_voxel(
-      std::size_t x, std::size_t y, std::size_t z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<IsConst, GeomVoxel>*
+  find_voxel(std::size_t x, std::size_t y, std::size_t z) const {
     return pool_at(pool, x, y, z);
   }
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<typename Color::Voxel>*
-  find_color_voxel(std::size_t x, std::size_t y, std::size_t z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+      Pointee<IsConst, typename Color::Voxel>*
+      find_color_voxel(std::size_t x, std::size_t y, std::size_t z) const {
     return pool_at(color_pool, x, y, z);
   }
 
   // Precondition: the block of (x, y, z) is allocated.
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<GeomVoxel>& voxel_at(
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<IsConst, GeomVoxel>& voxel_at(
       std::size_t x, std::size_t y, std::size_t z) const {
     return *find_voxel(x, y, z);
   }
-  [[nodiscard]] KINECTFUSION_HOST_DEVICE Pointee<typename Color::Voxel>&
-  color_at(std::size_t x, std::size_t y, std::size_t z) const {
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE
+      Pointee<IsConst, typename Color::Voxel>&
+      color_at(std::size_t x, std::size_t y, std::size_t z) const {
     return *find_color_voxel(x, y, z);
   }
 
@@ -104,12 +104,8 @@ struct SparseVolumeView {
   [[nodiscard]] KINECTFUSION_HOST_DEVICE
   // NOLINTNEXTLINE(hicpp-explicit-conversions)
   operator SparseVolumeView<Space, TargetConst, GeomVoxel, Color>() const {
-    return {.grid = grid,
-            .pool = pool,
-            .color_pool = color_pool,
-            .geometry = geometry,
-            .blocks = blocks,
-            .capacity = capacity};
+    return ViewCast::to_const<
+        SparseVolumeView<Space, TargetConst, GeomVoxel, Color>>(*this);
   }
 };
 

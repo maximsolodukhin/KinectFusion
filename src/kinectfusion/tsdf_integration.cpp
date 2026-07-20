@@ -1,8 +1,16 @@
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
+#include <stdexcept>
 
 namespace kinectfusion {
+
+#ifndef KINECTFUSION_HAS_CUDA
+std::unique_ptr<DepthUploader> DepthUploader::create() {
+  throw std::logic_error("KinectFusion was built without CUDA support");
+}
+#endif
 
 TsdfIntegrator::TsdfIntegrator(TsdfRuleVariant rule,
                                TsdfIntegrationOptions options)

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <kinectfusion/vector.hpp>
+#include <kinectfusion/view.hpp>
 #include <type_traits>
 #include <vector>
 
@@ -43,7 +44,7 @@ struct ImageView {
   // NOLINTNEXTLINE(hicpp-explicit-conversions)
   [[nodiscard]] KINECTFUSION_HOST_DEVICE operator ImageView<const T, Space>()
       const {
-    return {.data = data, .width = width, .height = height};
+    return ViewCast::to_const<ImageView<const T, Space>>(*this);
   }
 };
 

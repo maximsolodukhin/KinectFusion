@@ -1,5 +1,4 @@
 #include <cstddef>
-#include <kinectfusion/block_rep.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/marching_cubes.hpp>
@@ -34,9 +33,8 @@ class BasicHostPipeline final : public Pipeline {
         integrator_(config.tsdf_rule, config.integration),
         raycaster_(config.raycast) {}
 
-  using Pipeline::integrate;
-
-  void integrate(const DepthFrame& frame) override {
+  void integrate(const DepthFrame& frame,
+                 const DeviceDepthFrame* /*upload*/) override {
     TsdfIntegrator::validate_frame(frame);
     rep_.integrate(frame.view(), integrator_.options(), integrator_.rule());
     if constexpr (FlatVoxelRepresentation<Rep>) {
@@ -48,11 +46,11 @@ class BasicHostPipeline final : public Pipeline {
     return render_model(camera);
   }
 
-  [[nodiscard]] TrackingSurfacesVariant tracking_surfaces(
-      const RaycastCamera& camera, const LiveViewsVariant& live) override {
-    tracking_model_ = render_model(camera);
-    return HostTrackingSurfaces::from_render(
-        std::get<ConstHostSurfaceView>(live), view(tracking_model_));
+  void track(const RaycastCamera& camera, const PyramidLevel& live,
+             TrackingSurfaceConsumer& consumer) override {
+    const SurfaceMaps model = render_model(camera);
+    consumer.consume(HostTrackingSurfaces::from_render(
+        std::get<ConstHostSurfaceView>(live.surface), view(model)));
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
@@ -95,27 +93,12 @@ class BasicHostPipeline final : public Pipeline {
   EmptySpaceIndex<kSpace> index_;
   TsdfIntegrator integrator_;
   Raycaster raycaster_;
-  SurfaceMaps tracking_model_;
 };
 
-// The host half of the registry: one explicit combination per registered
-// (voxel, color) pair.
-template <TsdfVoxel GeomVoxel, typename Color>
-std::unique_ptr<Pipeline> make_host(const PipelineConfig& config) {
-  if (config.storage == StorageLayout::kSparse) {
-    return std::make_unique<
-        BasicHostPipeline<BlockRep<MemorySpace::kHost, GeomVoxel, Color>>>(
-        config);
-  }
-  return std::make_unique<
-      BasicHostPipeline<DenseRep<MemorySpace::kHost, GeomVoxel, Color>>>(
-      config);
-}
-
 std::unique_ptr<Pipeline> create_host(const PipelineConfig& config) {
-  return Pipeline::visit_storage(
-      config, [&config]<TsdfVoxel GeomVoxel, typename Color>() {
-        return make_host<GeomVoxel, Color>(config);
+  return Pipeline::visit_representation<MemorySpace::kHost>(
+      config, [&config]<typename Rep>() -> std::unique_ptr<Pipeline> {
+        return std::make_unique<BasicHostPipeline<Rep>>(config);
       });
 }
 

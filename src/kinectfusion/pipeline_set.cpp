@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <format>
 #include <kinectfusion/comparison.hpp>
@@ -7,7 +8,9 @@
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
+#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -20,10 +23,12 @@ namespace kinectfusion {
 
 PipelineSet::PipelineSet(std::vector<Member> members,
                          std::size_t reference_index,
-                         int compare_every_n_frames)
+                         int compare_every_n_frames,
+                         std::unique_ptr<DepthUploader> uploader)
     : members_(std::move(members)),
       reference_index_(reference_index),
-      compare_every_n_frames_(compare_every_n_frames) {}
+      compare_every_n_frames_(compare_every_n_frames),
+      uploader_(std::move(uploader)) {}
 
 PipelineSet PipelineSet::create(const PipelineSetConfig& config) {
   require(!config.pipelines.empty(),
@@ -64,11 +69,20 @@ PipelineSet PipelineSet::create(const PipelineSetConfig& config) {
     members.emplace_back(std::move(creation.pipeline),
                          std::move(creation.fallback_reason), creation.space);
   }
-  return {std::move(members), reference_index, config.compare_every_n_frames};
+
+  const bool any_device =
+      std::ranges::any_of(members, [](const Member& member) {
+        return member.space == MemorySpace::kDevice;
+      });
+  return {std::move(members), reference_index, config.compare_every_n_frames,
+          any_device ? DepthUploader::create() : nullptr};
 }
 
 void PipelineSet::integrate(const DepthFrame& frame,
                             const DeviceDepthFrame* shared_upload) {
+  if (shared_upload == nullptr && uploader_ != nullptr) {
+    shared_upload = &uploader_->upload(frame);
+  }
   for (const Member& member : members_) {
     member.pipeline->integrate(frame, shared_upload);
   }
@@ -78,10 +92,9 @@ SurfaceMaps PipelineSet::raycast_reference(const RaycastCamera& camera) {
   return members_.at(reference_index_).pipeline->raycast(camera);
 }
 
-TrackingSurfacesVariant PipelineSet::tracking_surfaces(
-    const RaycastCamera& camera, const LiveViewsVariant& live) {
-  return members_.at(reference_index_)
-      .pipeline->tracking_surfaces(camera, live);
+void PipelineSet::track(const RaycastCamera& camera, const PyramidLevel& live,
+                        TrackingSurfaceConsumer& consumer) {
+  members_.at(reference_index_).pipeline->track(camera, live, consumer);
 }
 
 std::vector<PipelineOutput> PipelineSet::raycast_all(

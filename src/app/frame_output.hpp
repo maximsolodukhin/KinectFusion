@@ -46,6 +46,7 @@ class FrameOutput {
   static void write_raycast_image(const kinectfusion::SurfaceMaps& maps,
                                   const std::filesystem::path& dir,
                                   const std::string& prefix);
+
   static void write_raycast_point_cloud(const kinectfusion::SurfaceMaps& maps,
                                         const std::filesystem::path& dir,
                                         const std::string& prefix);

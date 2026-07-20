@@ -58,6 +58,22 @@ template <typename T>
       config.name = value_of<std::string>(node, name);
     } else if (name == "space") {
       config.space = memory_space_from_name(value_of<std::string>(node, name));
+    } else if (name == "voxel") {
+      config.voxel = voxel_store_from_name(value_of<std::string>(node, name));
+    } else if (name == "color") {
+      config.color = color_store_from_name(value_of<std::string>(node, name));
+    } else if (name == "storage") {
+      config.storage =
+          storage_layout_from_name(value_of<std::string>(node, name));
+    } else if (name == "sparse-capacity") {
+      config.sparse_block_capacity =
+          static_cast<std::size_t>(value_of<std::int64_t>(node, name));
+    } else if (name == "integration") {
+      config.integration.mode =
+          integration_mode_from_name(value_of<std::string>(node, name));
+    } else if (name == "raycast") {
+      config.raycast_backend =
+          raycast_backend_from_name(value_of<std::string>(node, name));
     } else if (name == "tsdf-variant") {
       config.tsdf_rule = tsdf_rule_from_name(value_of<std::string>(node, name));
     } else if (name == "projective-distance") {
@@ -114,6 +130,68 @@ memory_space_names() {
       kNames{{"cpu", kinectfusion::MemorySpace::kHost},
              {"cuda", kinectfusion::MemorySpace::kDevice}};
   return kNames;
+}
+
+kinectfusion::VoxelStore voxel_store_from_name(std::string_view name) {
+  if (name == "float") {
+    return kinectfusion::VoxelStore::kFloat;
+  }
+  if (name == "quantized") {
+    return kinectfusion::VoxelStore::kQuantized;
+  }
+  if (name == "bf16") {
+    return kinectfusion::VoxelStore::kBf16;
+  }
+  fail(std::string{"Unknown voxel store '"} + std::string{name} +
+       "' (expected 'float', 'quantized', or 'bf16')");
+}
+
+kinectfusion::ColorStore color_store_from_name(std::string_view name) {
+  if (name == "float") {
+    return kinectfusion::ColorStore::kFloat;
+  }
+  if (name == "none") {
+    return kinectfusion::ColorStore::kNone;
+  }
+  fail(std::string{"Unknown color store '"} + std::string{name} +
+       "' (expected 'float' or 'none')");
+}
+
+kinectfusion::StorageLayout storage_layout_from_name(std::string_view name) {
+  if (name == "dense") {
+    return kinectfusion::StorageLayout::kDense;
+  }
+  if (name == "sparse") {
+    return kinectfusion::StorageLayout::kSparse;
+  }
+  fail(std::string{"Unknown storage layout '"} + std::string{name} +
+       "' (expected 'dense' or 'sparse')");
+}
+
+kinectfusion::IntegrationMode integration_mode_from_name(
+    std::string_view name) {
+  if (name == "full") {
+    return kinectfusion::IntegrationMode::kFull;
+  }
+  if (name == "band") {
+    return kinectfusion::IntegrationMode::kBand;
+  }
+  fail(std::string{"Unknown integration mode '"} + std::string{name} +
+       "' (expected 'full' or 'band')");
+}
+
+kinectfusion::RaycastBackend raycast_backend_from_name(std::string_view name) {
+  if (name == "march") {
+    return kinectfusion::RaycastBackend::kMarch;
+  }
+  if (name == "bitmap-march") {
+    return kinectfusion::RaycastBackend::kBitmapMarch;
+  }
+  if (name == "band-march") {
+    return kinectfusion::RaycastBackend::kBandMarch;
+  }
+  fail(std::string{"Unknown raycast backend '"} + std::string{name} +
+       "' (expected 'march', 'bitmap-march', or 'band-march')");
 }
 
 kinectfusion::MemorySpace memory_space_from_name(std::string_view name) {

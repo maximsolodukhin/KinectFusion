@@ -3,7 +3,9 @@
 
 #include <Eigen/Core>
 #include <array>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <kinectfusion/cuda_compat.hpp>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/rgbd.hpp>
@@ -79,8 +81,10 @@ struct IcpNormalEquations {
       for (std::size_t col = row; col < kIcpDof; ++col) {
         const auto first = static_cast<Eigen::Index>(row);
         const auto second = static_cast<Eigen::Index>(col);
+
         dense(first, second) = jtj.at(entry);
         dense(second, first) = jtj.at(entry);
+
         ++entry;
       }
     }
@@ -156,6 +160,12 @@ class CorrespondenceSearch {
     return surfaces_.live;
   }
 
+  // The device GN loop composes each increment onto the pose in place.
+  [[nodiscard]] KINECTFUSION_HOST_DEVICE IcpIterationTransforms&
+  transforms_ref() {
+    return transforms_;
+  }
+
   [[nodiscard]] KINECTFUSION_HOST_DEVICE compat::optional<IcpCorrespondence>
   match(std::size_t x, std::size_t y) const {
     const auto& [live, model] = surfaces_;
@@ -172,11 +182,14 @@ class CorrespondenceSearch {
     }
 
     const Vec2f pixel = intrinsics_.project(source_in_model);
+
     const auto model_x = compat::lround(pixel.x);
     const auto model_y = compat::lround(pixel.y);
+
     if (model_x < 0 || model_y < 0) {
       return compat::nullopt;
     }
+
     const auto col = static_cast<std::size_t>(model_x);
     const auto row = static_cast<std::size_t>(model_y);
     if (col >= model.vertices.width || row >= model.vertices.height) {
@@ -192,9 +205,11 @@ class CorrespondenceSearch {
     const Vec3f source_normal =
         normalized(transforms_.camera.rotation * live_normal);
     const float distance = norm(source - model_vertex);
+
     if (distance > gates_.max_point_distance) {
       return compat::nullopt;
     }
+
     if (dot(source_normal, model_normal) < gates_.min_normal_dot) {
       return compat::nullopt;
     }
@@ -219,10 +234,35 @@ using DeviceCorrespondenceSearch = CorrespondenceSearch<MemorySpace::kDevice>;
 struct ExplicitGraphBuild {};  // assembled node by node through the graph API
 struct CapturedGraphBuild {};  // recorded from stream capture
 
+// The closed strategy set: the sweep is instantiated for each tag.
+template <typename B>
+concept GraphBuildStrategy =
+    std::same_as<B, ExplicitGraphBuild> || std::same_as<B, CapturedGraphBuild>;
+
+// Parameters and result of the whole-level device GN loop. Status values
+// mirror IcpFailure.
+struct DeviceIcpLoopParams {
+  std::size_t min_correspondences{};
+  float min_update_translation{};
+  float min_update_rotation{};
+  float max_update_translation{};
+  float max_update_rotation{};
+};
+
+struct DeviceIcpLoopResult {
+  IcpIterationTransforms transforms{};
+  IcpNormalEquations equations{};
+  float update_translation{};
+  float update_rotation{};
+  std::int32_t status{};  // 0 max-iters, 1 converged, 2 too few, 3 solve, 4 big
+};
+
+static_assert(std::is_trivially_copyable_v<DeviceIcpLoopResult>);
+
 // Owns the per-iteration reduction: the device buffers, the private stream, and
 // the grid-indexed executable-graph cache. `Build` picks the graph-construction
 // strategy without touching the shared reduction kernel.
-template <typename Build>
+template <GraphBuildStrategy Build>
 class BasicDeviceCorrespondenceSweep {
  public:
   BasicDeviceCorrespondenceSweep();
@@ -238,6 +278,11 @@ class BasicDeviceCorrespondenceSweep {
 
   [[nodiscard]] IcpNormalEquations run(
       const DeviceCorrespondenceSearch& search);
+
+  // Runs `iterations` GN steps on the device and syncs once at the end.
+  [[nodiscard]] DeviceIcpLoopResult run_loop(
+      const DeviceCorrespondenceSearch& search, unsigned int iterations,
+      const DeviceIcpLoopParams& params);
 
  private:
   struct Scratch;

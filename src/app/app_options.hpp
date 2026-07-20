@@ -49,6 +49,13 @@ struct AppOptions {
   float min_icp_eigenvalue{kinectfusion::kDefaultMinIcpSystemEigenvalue};
   float max_icp_condition_number{kinectfusion::kDefaultMaxIcpConditionNumber};
   bool icp_capture_graph{false};
+  bool icp_device_solve{false};
+  std::string voxel_store{"float"};
+  std::string color_store{"float"};
+  std::string raycast_backend{"march"};
+  std::string integration_mode{"full"};
+  std::string storage_layout{"dense"};
+  std::size_t sparse_capacity{0};
   bool projective_tsdf_distance{true};
   bool distance_scaled_truncation{false};
   float truncation_distance_scale{
@@ -68,6 +75,8 @@ struct AppOptions {
   bool write_raycast_images{true};
   bool write_point_clouds{true};
   bool raycast_tsdf_from_valid_corners{false};
+  bool cell_gradient_normals{false};
+  bool raycast_seed_previous{false};
 
   // Origin of the TSDF volume in world space, derived from its extent and the
   // requested margin behind the initial camera.

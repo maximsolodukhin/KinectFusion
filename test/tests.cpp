@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <kinectfusion/comparison.hpp>
 #include <kinectfusion/depth_processing.hpp>
@@ -13,6 +14,7 @@
 #include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/image_proc/image.hpp>
+#include <kinectfusion/occupancy.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/raycasting.hpp>
@@ -205,6 +207,75 @@ TEST_CASE("Grid index ranges walk the index space in storage order", "[grid]") {
   REQUIRE(*pixels.begin() == kinectfusion::Pixel{});
   REQUIRE(*std::next(pixels.begin()) == kinectfusion::Pixel{.x = 1});
   REQUIRE(*std::next(pixels.begin(), 3) == kinectfusion::Pixel{.y = 1});
+}
+
+TEST_CASE("Block voxel range visits one block clamped to the resolution",
+          "[grid]") {
+  const kinectfusion::Size3 resolution{.x = 12, .y = 16, .z = 9};
+  const auto blocks = kinectfusion::BlockGrid::for_resolution(resolution);
+  constexpr std::size_t kEdge = kinectfusion::kVoxelBlockEdge;
+  REQUIRE(blocks.extent() == kinectfusion::Size3{.x = 2, .y = 2, .z = 2});
+
+  // Interior block 0 covers the full 8^3.
+  const kinectfusion::BlockVoxels interior{0, blocks, resolution};
+  std::vector<kinectfusion::GridIndex> visited;
+  for (const kinectfusion::GridIndex index : interior) {
+    visited.push_back(index);
+  }
+  REQUIRE(visited.size() == kinectfusion::kVoxelBlockVolume);
+  REQUIRE(visited.front() == kinectfusion::GridIndex{});
+  REQUIRE(visited.at(1) == kinectfusion::GridIndex{.x = 1});  // x fastest
+  REQUIRE(visited.back() == kinectfusion::GridIndex{.x = 7, .y = 7, .z = 7});
+
+  // Flat block 7 = (1, 1, 1): clamped to 4 x 8 x 1 in-bounds voxels.
+  const kinectfusion::BlockVoxels corner{7, blocks, resolution};
+  std::size_t count = 0;
+  for (const auto [x, y, z] : corner) {
+    REQUIRE(x >= kEdge);
+    REQUIRE(x < resolution.x);
+    REQUIRE(y >= kEdge);
+    REQUIRE(z == kEdge);
+    ++count;
+  }
+  REQUIRE(count == (resolution.x - kEdge) * kEdge * (resolution.z - kEdge));
+}
+
+TEST_CASE("Size3 bounds checks and unflatten round-trip", "[grid]") {
+  const kinectfusion::Size3 extent{.x = 4, .y = 3, .z = 2};
+  REQUIRE(extent.contains(kinectfusion::make_vec3f(0.0F, 0.0F, 0.0F)));
+  REQUIRE(extent.contains(kinectfusion::make_vec3f(3.5F, 2.5F, 1.5F)));
+  REQUIRE_FALSE(extent.contains(kinectfusion::make_vec3f(4.0F, 0.0F, 0.0F)));
+  REQUIRE_FALSE(extent.contains(kinectfusion::make_vec3f(-0.5F, 0.0F, 0.0F)));
+  REQUIRE(extent.contains(3, 2, 1));
+  REQUIRE_FALSE(extent.contains(-1, 0, 0));
+  REQUIRE_FALSE(extent.contains(0, 3, 0));
+  for (std::size_t flat = 0; flat < extent.x * extent.y * extent.z; ++flat) {
+    const auto coords = extent.unflatten(flat);
+    REQUIRE((((coords.z * extent.y) + coords.y) * extent.x) + coords.x == flat);
+  }
+}
+
+TEST_CASE("BlockGrid maps voxels to flat blocks and back", "[grid]") {
+  const kinectfusion::Size3 resolution{.x = 17, .y = 8, .z = 9};
+  const auto blocks = kinectfusion::BlockGrid::for_resolution(resolution);
+  REQUIRE(blocks.extent() == kinectfusion::Size3{.x = 3, .y = 1, .z = 2});
+  REQUIRE(blocks.count() == 6);
+  for (std::size_t flat = 0; flat < blocks.count(); ++flat) {
+    REQUIRE(blocks.flat_of(blocks.coords_of(flat)) == flat);
+    const auto base = blocks.voxel_base(flat);
+    REQUIRE(blocks.block_of_voxel(base.x, base.y, base.z) == flat);
+  }
+  REQUIRE(blocks.block_of_voxel(16, 7, 8) ==
+          blocks.flat_of({.x = 2, .y = 0, .z = 1}));
+  REQUIRE(kinectfusion::BlockGrid::intra_of_voxel(9, 2, 8) ==
+          kinectfusion::BlockGrid::intra_of_voxel(1, 2, 0));
+}
+
+TEST_CASE("Set-bit enumeration visits exactly the set bits", "[grid]") {
+  std::vector<std::size_t> visited;
+  kinectfusion::BlockBitmapOps::for_each_set_bit(
+      0b1010'0001U, 64, [&](std::size_t index) { visited.push_back(index); });
+  REQUIRE(visited == std::vector<std::size_t>{64, 69, 71});
 }
 
 TEST_CASE("Volume integrates and raycasts a synthetic depth plane",
@@ -418,6 +489,142 @@ TEST_CASE("Pipeline set compares variants against the reference",
           {.pipelines = {{.name = "a", .volume = synthetic_volume_geometry()}},
            .reference = "missing"}),
       std::invalid_argument);
+}
+
+TEST_CASE("Pipeline set compares voxel storages in one run", "[pipeline]") {
+  const auto intrinsics = synthetic_intrinsics();
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+
+  auto set = kinectfusion::PipelineSet::create(
+      {.pipelines = {{.name = "float", .volume = synthetic_volume_geometry()},
+                     {.name = "quantized",
+                      .volume = synthetic_volume_geometry(),
+                      .voxel = kinectfusion::VoxelStore::kQuantized,
+                      .color = kinectfusion::ColorStore::kNone},
+                     {.name = "bf16",
+                      .volume = synthetic_volume_geometry(),
+                      .voxel = kinectfusion::VoxelStore::kBf16,
+                      .color = kinectfusion::ColorStore::kNone}},
+       .reference = "float"});
+
+  set.integrate({.depth = &depth, .intrinsics = intrinsics});
+  const auto comparisons = set.compare();
+  REQUIRE(comparisons.size() == 2);
+  for (const auto& comparison : comparisons) {
+    // Same observations: the storages agree on which voxels exist.
+    REQUIRE(comparison.volume.compared_voxels > 0);
+    REQUIRE(comparison.volume.only_primary == 0);
+    REQUIRE(comparison.volume.only_reference == 0);
+    REQUIRE(comparison.volume.max_distance_delta > 0.0F);
+  }
+  // int16 differs by its absolute quantum, bf16 by its relative one.
+  REQUIRE(comparisons[0].volume.max_distance_delta < 1.0e-4F);
+  REQUIRE(comparisons[1].volume.max_distance_delta < 5.0e-3F);
+}
+
+TEST_CASE("Band integration matches full integration near the surface",
+          "[pipeline]") {
+  const auto intrinsics = synthetic_intrinsics();
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+
+  auto set = kinectfusion::PipelineSet::create(
+      {.pipelines = {{.name = "full", .volume = synthetic_volume_geometry()},
+                     {.name = "band",
+                      .integration = {.mode =
+                                          kinectfusion::IntegrationMode::kBand},
+                      .volume = synthetic_volume_geometry()}},
+       .reference = "full"});
+  set.integrate({.depth = &depth, .intrinsics = intrinsics});
+
+  const auto comparisons = set.compare();
+  REQUIRE(comparisons.size() == 1);
+  // Shared voxels agree exactly (same per-voxel rule).
+  REQUIRE(comparisons.front().volume.compared_voxels > 0);
+  REQUIRE(comparisons.front().volume.max_distance_delta == 0.0F);
+  // Full mode also carves free space that the band never visits.
+  REQUIRE(comparisons.front().volume.only_reference > 0);
+  REQUIRE(comparisons.front().volume.only_primary == 0);
+}
+
+TEST_CASE("Sparse blocks match dense band integration exactly", "[pipeline]") {
+  const auto intrinsics = synthetic_intrinsics();
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+
+  auto set = kinectfusion::PipelineSet::create(
+      {.pipelines =
+           {{.name = "dense-band",
+             .integration = {.mode = kinectfusion::IntegrationMode::kBand},
+             .volume = synthetic_volume_geometry()},
+            {.name = "sparse",
+             .integration = {.mode = kinectfusion::IntegrationMode::kBand},
+             .volume = synthetic_volume_geometry(),
+             .storage = kinectfusion::StorageLayout::kSparse}},
+       .reference = "dense-band"});
+  set.integrate({.depth = &depth, .intrinsics = intrinsics});
+
+  const auto comparisons = set.compare();
+  REQUIRE(comparisons.size() == 1);
+  // Same allocation pass, same per-voxel rule: shared voxels are exact.
+  REQUIRE(comparisons.front().volume.compared_voxels > 0);
+  REQUIRE(comparisons.front().volume.max_distance_delta == 0.0F);
+  REQUIRE(comparisons.front().volume.only_primary == 0);
+  REQUIRE(comparisons.front().volume.only_reference == 0);
+}
+
+TEST_CASE("Sparse pool overflow degrades without corruption", "[pipeline]") {
+  const auto intrinsics = synthetic_intrinsics();
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+
+  auto set = kinectfusion::PipelineSet::create(
+      {.pipelines =
+           {{.name = "dense-band",
+             .integration = {.mode = kinectfusion::IntegrationMode::kBand},
+             .volume = synthetic_volume_geometry()},
+            {.name = "tiny",
+             .integration = {.mode = kinectfusion::IntegrationMode::kBand},
+             .volume = synthetic_volume_geometry(),
+             .storage = kinectfusion::StorageLayout::kSparse,
+             .sparse_block_capacity = 1}},
+       .reference = "dense-band"});
+  set.integrate({.depth = &depth, .intrinsics = intrinsics});
+
+  const auto comparisons = set.compare();
+  // The one allocated block still matches exactly. All other voxels are
+  // missing relative to the reference, never wrong.
+  REQUIRE(comparisons.front().volume.max_distance_delta == 0.0F);
+  REQUIRE(comparisons.front().volume.only_primary == 0);
+  REQUIRE(comparisons.front().volume.only_reference > 0);
+}
+
+TEST_CASE("Bitmap-march raycast is bit-identical to the plain march",
+          "[pipeline]") {
+  const auto intrinsics = synthetic_intrinsics();
+  const auto depth = flat_depth_image(kFixtureDepth1m);
+  const kinectfusion::RaycastCamera camera{.intrinsics = intrinsics,
+                                           .width = kSyntheticImageSize,
+                                           .height = kSyntheticImageSize};
+
+  auto march = kinectfusion::Pipeline::create(
+      {.name = "march", .volume = synthetic_volume_geometry()});
+  auto bitmap = kinectfusion::Pipeline::create(
+      {.name = "bitmap",
+       .volume = synthetic_volume_geometry(),
+       .raycast_backend = kinectfusion::RaycastBackend::kBitmapMarch});
+  march.pipeline->integrate({.depth = &depth, .intrinsics = intrinsics});
+  bitmap.pipeline->integrate({.depth = &depth, .intrinsics = intrinsics});
+
+  const auto plain = march.pipeline->raycast(camera);
+  const auto skipped = bitmap.pipeline->raycast(camera);
+  // The dilated skip only removes nullopt samples, so each output byte
+  // (including NaN invalid pixels) must match the plain march exactly.
+  const auto bytes_equal = [](const auto& lhs, const auto& rhs) {
+    return std::memcmp(lhs.data().data(), rhs.data().data(),
+                       lhs.data().size() * sizeof(lhs.at(0, 0))) == 0;
+  };
+  REQUIRE(valid_raycast_pixels(plain) > 0);
+  REQUIRE(bytes_equal(plain.points, skipped.points));
+  REQUIRE(bytes_equal(plain.normals, skipped.normals));
+  REQUIRE(bytes_equal(plain.colors, skipped.colors));
 }
 
 TEST_CASE("Pipeline set refuses to substitute a member's memory space",

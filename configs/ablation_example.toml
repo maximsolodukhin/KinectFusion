@@ -22,8 +22,14 @@ tsdf-variant = "classic"
 
 # Available per-pipeline keys:
 #   name                        (required, unique)
-#   space                       "cpu" | "cuda" (falls back to cpu with a warning)
+#   space                       "cpu" | "cuda"
 #   tsdf-variant                "angle-weighted" | "classic"
+#   voxel                       "float" | "quantized" | "bf16"
+#   color                       "float" | "none"
+#   storage                     "dense" | "sparse" (needs integration = "band")
+#   sparse-capacity             int, 0 = one quarter of the block count
+#   integration                 "full" | "band"
+#   raycast                     "march" | "bitmap-march" | "band-march"
 #   projective-distance         bool
 #   distance-scaled-truncation  bool
 #   truncation-distance-scale   float

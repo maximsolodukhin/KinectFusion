@@ -25,10 +25,12 @@ class DeviceSurfaceMaps {
   DeviceColorImg colors_;
 };
 
+// The CUDA backend defines and instantiates this for each registered
+// sampler.
 class DeviceRaycastSweep {
  public:
-  static void run(const DeviceSurfaceRaycast& raycast,
-                  const DeviceSurfaceMapsView& maps);
+  template <PixelRenderer<MemorySpace::kDevice> Raycast>
+  static void run(const Raycast& raycast, const DeviceSurfaceMapsView& maps);
 };
 
 }  // namespace kinectfusion

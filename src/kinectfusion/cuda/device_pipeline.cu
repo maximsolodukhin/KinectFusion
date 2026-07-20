@@ -1,13 +1,16 @@
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <kinectfusion/block_rep.cuh>
 #include <kinectfusion/depth_processing.hpp>
 #include <kinectfusion/device_volume.cuh>
 #include <kinectfusion/image_proc/device_image.cuh>
+#include <kinectfusion/occupancy.cuh>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/raycasting.cuh>
 #include <kinectfusion/raycasting.hpp>
 #include <kinectfusion/tsdf_integration.cuh>
+#include <kinectfusion/volume_representation.hpp>
 #include <map>
 #include <memory>
 #include <optional>
@@ -20,11 +23,17 @@ namespace {
 // Integrates, raycasts, and counts on the device; the volume only crosses to
 // the host through host_view's explicit staging seam. Per-extent map buffers
 // are cached across frames instead of reallocated per call.
-class DevicePipeline final : public Pipeline {
+template <typename Rep>
+  requires VolumeRepresentation<Rep, MemorySpace::kDevice>
+class BasicDevicePipeline final : public Pipeline {
+  static constexpr MemorySpace kSpace = MemorySpace::kDevice;
+
  public:
-  explicit DevicePipeline(const PipelineConfig& config)
+  explicit BasicDevicePipeline(const PipelineConfig& config)
       : Pipeline(config.name),
-        volume_(config.volume),
+        rep_(RepresentationFactory::make<Rep>(config.volume,
+                                              config.sparse_block_capacity)),
+        index_(make_index(config)),
         integrator_(config.tsdf_rule, config.integration),
         raycaster_(config.raycast) {}
 
@@ -40,15 +49,18 @@ class DevicePipeline final : public Pipeline {
       fallback_upload_.assign(frame);
       shared_upload = &fallback_upload_;
     }
-    const DeviceIntegrationContext context{shared_upload->view(),
-                                           integrator_.options()};
-    DeviceIntegrationSweep::run(volume_.view(), context, integrator_.rule());
+    rep_.integrate(shared_upload->view(), integrator_.options(),
+                   integrator_.rule());
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      index_.rebuild(rep_.view());
+    }
   }
 
   [[nodiscard]] SurfaceMaps raycast(const RaycastCamera& camera) override {
     Raycaster::validate_camera(camera);
     DeviceSurfaceMaps& maps = surface_maps_for(camera.width, camera.height);
-    DeviceRaycastSweep::run(device_raycast(camera), maps.view());
+    render_model(camera, maps);
+
     return maps.download();
   }
 
@@ -56,23 +68,31 @@ class DevicePipeline final : public Pipeline {
       const RaycastCamera& camera, const LiveViewsVariant& live) override {
     Raycaster::validate_camera(camera);
     DeviceSurfaceMaps& model = surface_maps_for(camera.width, camera.height);
-    DeviceRaycastSweep::run(device_raycast(camera), model.view());
+    render_model(camera, model);
+
     return DeviceTrackingSurfaces::from_render(device_live(live), model.view());
   }
 
   [[nodiscard]] std::size_t observed_voxel_count() const override {
-    return DeviceVolumeReduction::observed_voxel_count(volume_.view());
+    return rep_.observed_voxel_count();
   }
 
   [[nodiscard]] ConstHostVolumeView host_view(
       std::optional<HostVolume>& staging) const override {
-    staging.emplace(volume_.geometry());
-    staging->copy_from(volume_);
-    return staging->view();
+    return rep_.host_dense_view(staging);
   }
 
  private:
   using MapExtent = std::pair<std::size_t, std::size_t>;
+
+  [[nodiscard]] static EmptySpaceIndex<kSpace> make_index(
+      const PipelineConfig& config) {
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      return {config.raycast_backend, config.volume};
+    } else {
+      return {};
+    }
+  }
 
   // Device-built pyramids hand over device views directly; host pyramids are
   // staged through the per-extent upload cache.
@@ -84,10 +104,25 @@ class DevicePipeline final : public Pipeline {
     return view(staged_live(std::get<ConstHostSurfaceView>(live)));
   }
 
-  [[nodiscard]] DeviceSurfaceRaycast device_raycast(
-      const RaycastCamera& camera) const {
-    return DeviceSurfaceRaycast::from_camera(volume_.view(),
-                                             raycaster_.options(), camera);
+  // Sparse storage has no empty-space index, so the pipeline instantiates
+  // only the NoSkip raycast.
+  void render_model(const RaycastCamera& camera, DeviceSurfaceMaps& maps) {
+    if constexpr (FlatVoxelRepresentation<Rep>) {
+      index_.visit(
+          [&](const auto& skip) { launch_raycast(skip, camera, maps); });
+    } else {
+      launch_raycast(NoSkip{}, camera, maps);
+    }
+  }
+
+  template <SkipPolicy Skip>
+  void launch_raycast(const Skip& skip, const RaycastCamera& camera,
+                      DeviceSurfaceMaps& maps) {
+    const SurfaceRaycast<kSpace, typename Rep::Sampler, Skip> raycast{
+        rep_.sampler(), raycaster_.options(), camera.pose(), camera.intrinsics,
+        skip};
+
+    DeviceRaycastSweep::run(raycast, maps.view());
   }
 
   [[nodiscard]] DeviceSurfaceMaps& surface_maps_for(std::size_t width,
@@ -108,10 +143,12 @@ class DevicePipeline final : public Pipeline {
       staged.vertices.copy_from(live.vertices);
       staged.normals.copy_from(live.normals);
     }
+
     return staged;
   }
 
-  DeviceVolume volume_;
+  Rep rep_;
+  EmptySpaceIndex<kSpace> index_;
   TsdfIntegrator integrator_;
   Raycaster raycaster_;
   // Own upload for integrate calls no pyramid or earlier pipeline seeded.
@@ -119,6 +156,19 @@ class DevicePipeline final : public Pipeline {
   std::map<MapExtent, DeviceSurfaceMaps> surface_maps_;
   std::map<MapExtent, DeviceSurface> live_maps_;
 };
+
+// The device half of the registry, mirroring create_host.
+template <TsdfVoxel GeomVoxel, typename Color>
+std::unique_ptr<Pipeline> make_device(const PipelineConfig& config) {
+  if (config.storage == StorageLayout::kSparse) {
+    return std::make_unique<
+        BasicDevicePipeline<BlockRep<MemorySpace::kDevice, GeomVoxel, Color>>>(
+        config);
+  }
+  return std::make_unique<
+      BasicDevicePipeline<DenseRep<MemorySpace::kDevice, GeomVoxel, Color>>>(
+      config);
+}
 
 }  // namespace
 
@@ -129,7 +179,10 @@ bool Pipeline::device_available() {
 
 std::unique_ptr<Pipeline> Pipeline::create_device(
     const PipelineConfig& config) {
-  return std::make_unique<DevicePipeline>(config);
+  return visit_storage(config,
+                       [&config]<TsdfVoxel GeomVoxel, typename Color>() {
+                         return make_device<GeomVoxel, Color>(config);
+                       });
 }
 
 }  // namespace kinectfusion

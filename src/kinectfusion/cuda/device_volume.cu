@@ -4,6 +4,7 @@
 #include <kinectfusion/cuda/device_buffer.cuh>
 #include <kinectfusion/cuda/launch.cuh>
 #include <kinectfusion/device_volume.cuh>
+#include <kinectfusion/registered_storages.hpp>
 
 namespace kinectfusion {
 
@@ -11,7 +12,8 @@ namespace {
 
 // Grid-stride count; each thread accumulates locally and contributes one
 // atomic add.
-__global__ void count_observed_kernel(ConstDeviceVolumeView volume,
+template <DenseVoxelGridView VolumeViewT>
+__global__ void count_observed_kernel(VolumeViewT volume,
                                       unsigned long long* result) {
   const std::size_t stride = static_cast<std::size_t>(blockDim.x) * gridDim.x;
   const std::size_t first =
@@ -20,7 +22,7 @@ __global__ void count_observed_kernel(ConstDeviceVolumeView volume,
   unsigned long long count = 0;
   for (std::size_t index = first; index < volume.voxel_count();
        index += stride) {
-    if (volume.voxels[index].weight > 0.0F) {
+    if (volume.voxels[index].weight_value() > 0.0F) {
       ++count;
     }
   }
@@ -31,8 +33,9 @@ __global__ void count_observed_kernel(ConstDeviceVolumeView volume,
 
 }  // namespace
 
+template <DenseVoxelGridView VolumeViewT>
 std::size_t DeviceVolumeReduction::observed_voxel_count(
-    const ConstDeviceVolumeView& volume) {
+    const VolumeViewT& volume) {
   cuda::DeviceBuffer<unsigned long long> result{1};
 
   constexpr unsigned int kBlock = 256;
@@ -47,5 +50,13 @@ std::size_t DeviceVolumeReduction::observed_voxel_count(
   result.copy_to_host(&count, 1);
   return static_cast<std::size_t>(count);
 }
+
+// One instantiation per registered storage combination.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define KINECTFUSION_INSTANTIATE(GeomVoxel, Color)                  \
+  template std::size_t DeviceVolumeReduction::observed_voxel_count( \
+      const ConstVolumeView<MemorySpace::kDevice, GeomVoxel, Color>&);
+KINECTFUSION_FOR_EACH_REGISTERED_STORAGE(KINECTFUSION_INSTANTIATE)
+#undef KINECTFUSION_INSTANTIATE
 
 }  // namespace kinectfusion

@@ -48,6 +48,7 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
   if (const auto rejected = rejected_input(request)) {
     return *rejected;
   }
+
   return estimate_with(request, [&](const IcpIterationTransforms& transforms) {
     return find_correspondences(request, transforms);
   });
@@ -58,6 +59,11 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
   if (const auto rejected = rejected_input(request)) {
     return *rejected;
   }
+
+  if (options_.device_solve) {
+    return estimate_device_loop(request);
+  }
+
   return estimate_with(request, [&](const IcpIterationTransforms& transforms) {
     return std::visit(
         [&](auto& sweep) {
@@ -68,28 +74,120 @@ IcpOutcome ProjectiveIcpTracker::estimate_pose(
   });
 }
 
+// Whole-level GN loop on the device: one graph launch and one sync per
+// call. The stability spectrum is checked once on the final system. The
+// per-iteration gates (count, solve, update caps, convergence) run in the
+// kernel.
+IcpOutcome ProjectiveIcpTracker::estimate_device_loop(
+    const DeviceTrackingRequest& request) const {
+  IcpOutcome outcome{.pose = request.initial_camera_to_world};
+  const IcpIterationTransforms transforms = IcpIterationTransforms::from_poses(
+      outcome.pose, request.model_camera_to_world.inverse());
+  const DeviceIcpLoopParams params{
+      .min_correspondences = options_.min_correspondences,
+      .min_update_translation = options_.min_update_translation,
+      .min_update_rotation = options_.min_update_rotation,
+      .max_update_translation = options_.max_update_translation,
+      .max_update_rotation = options_.max_update_rotation};
+
+  const DeviceIcpLoopResult loop = std::visit(
+      [&](auto& sweep) {
+        return sweep.run_loop(
+            DeviceCorrespondenceSearch{request.surfaces,
+                                       request.model_intrinsics, transforms,
+                                       gates()},
+            request.iterations, params);
+      },
+      device_sweep_);
+
+  outcome.diagnostics.correspondences = loop.equations.count;
+  if (loop.equations.count > 0) {
+    outcome.diagnostics.mean_point_distance =
+        loop.equations.distance_sum / static_cast<float>(loop.equations.count);
+  }
+
+  outcome.diagnostics.update_translation = loop.update_translation;
+  outcome.diagnostics.update_rotation = loop.update_rotation;
+
+  const RigidTransform& camera = loop.transforms.camera;
+  Eigen::Matrix4f pose = Eigen::Matrix4f::Identity();
+  pose(0, 0) = camera.rotation.row_x.x;
+  pose(0, 1) = camera.rotation.row_x.y;
+  pose(0, 2) = camera.rotation.row_x.z;
+  pose(1, 0) = camera.rotation.row_y.x;
+  pose(1, 1) = camera.rotation.row_y.y;
+  pose(1, 2) = camera.rotation.row_y.z;
+  pose(2, 0) = camera.rotation.row_z.x;
+  pose(2, 1) = camera.rotation.row_z.y;
+  pose(2, 2) = camera.rotation.row_z.z;
+  pose(0, 3) = camera.translation.x;
+  pose(1, 3) = camera.translation.y;
+  pose(2, 3) = camera.translation.z;
+
+  switch (loop.status) {
+    case 2:
+      outcome.result = std::unexpected(IcpFailure::kTooFewCorrespondences);
+      return outcome;
+    case 3:
+      outcome.result = std::unexpected(IcpFailure::kSolveFailed);
+      return outcome;
+    case 4:
+      outcome.result = std::unexpected(IcpFailure::kUpdateTooLarge);
+      return outcome;
+    default:
+      break;
+  }
+
+  const auto stability = check_system_stability(loop.equations);
+  outcome.diagnostics.min_system_eigenvalue = stability.min_eigenvalue;
+  outcome.diagnostics.condition_number = stability.condition_number;
+
+  if (!stability.stable) {
+    outcome.result = std::unexpected(IcpFailure::kUnconstrainedSystem);
+    return outcome;
+  }
+
+  outcome.pose = pose;
+  if (loop.status == 1) {
+    outcome.result =
+        IcpSuccess{Converged{.update_translation = loop.update_translation,
+                             .update_rotation = loop.update_rotation}};
+  } else {
+    outcome.result = IcpSuccess{MaxIterations{}};
+  }
+
+  return outcome;
+}
+
 #ifndef KINECTFUSION_HAS_CUDA
 
-template <typename Build>
+template <GraphBuildStrategy Build>
 struct BasicDeviceCorrespondenceSweep<Build>::Scratch {};
 
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep() =
     default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::~BasicDeviceCorrespondenceSweep() =
     default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>::BasicDeviceCorrespondenceSweep(
     BasicDeviceCorrespondenceSweep&&) noexcept = default;
-template <typename Build>
+template <GraphBuildStrategy Build>
 BasicDeviceCorrespondenceSweep<Build>&
 BasicDeviceCorrespondenceSweep<Build>::operator=(
     BasicDeviceCorrespondenceSweep&&) noexcept = default;
 
-template <typename Build>
+template <GraphBuildStrategy Build>
 IcpNormalEquations BasicDeviceCorrespondenceSweep<Build>::run(
     const DeviceCorrespondenceSearch& /*search*/) {
+  throw std::logic_error("KinectFusion was built without CUDA support");
+}
+
+template <GraphBuildStrategy Build>
+DeviceIcpLoopResult BasicDeviceCorrespondenceSweep<Build>::run_loop(
+    const DeviceCorrespondenceSearch& /*search*/, unsigned int /*iterations*/,
+    const DeviceIcpLoopParams& /*params*/) {
   throw std::logic_error("KinectFusion was built without CUDA support");
 }
 
@@ -114,6 +212,7 @@ IcpOutcome ProjectiveIcpTracker::estimate_with(
        ++iteration) {
     const IcpIterationTransforms transforms =
         IcpIterationTransforms::from_poses(outcome.pose, model_world_to_camera);
+
     const auto equations = find_equations(transforms);
     outcome.diagnostics.correspondences = equations.count;
     if (equations.count > 0) {
@@ -125,8 +224,10 @@ IcpOutcome ProjectiveIcpTracker::estimate_with(
     }
 
     const auto stability = check_system_stability(equations);
+
     outcome.diagnostics.min_system_eigenvalue = stability.min_eigenvalue;
     outcome.diagnostics.condition_number = stability.condition_number;
+
     if (!stability.stable) {
       return fail(IcpFailure::kUnconstrainedSystem);
     }
@@ -191,6 +292,7 @@ ProjectiveIcpTracker::check_system_stability(
 
   const float min_eigenvalue = solver.eigenvalues().minCoeff();
   const float max_eigenvalue = solver.eigenvalues().maxCoeff();
+
   if (min_eigenvalue <= 0.0F || max_eigenvalue <= 0.0F) {
     return SystemStability{.stable = false,
                            .min_eigenvalue = min_eigenvalue,

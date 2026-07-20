@@ -1,34 +1,8 @@
-#include <cstddef>
-#include <kinectfusion/grid.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
-#include <kinectfusion/vector.hpp>
 #include <kinectfusion/volume.hpp>
-#include <variant>
 
 namespace kinectfusion {
-namespace {
-
-// The CUDA port lifts this sweep into the per-rule kernel launch.
-class IntegrationSweep {
- public:
-  IntegrationSweep(const HostVolumeView& volume,
-                   const HostIntegrationContext& context)
-      : volume_(volume), context_(&context) {}
-
-  template <TsdfUpdateRule<MemorySpace::kHost> Rule>
-  void run(const Rule& rule) const {
-    for (const auto [x, y, z] : GridIndices{volume_.resolution()}) {
-      rule.update(volume_, *context_, x, y, z);
-    }
-  }
-
- private:
-  HostVolumeView volume_;
-  const HostIntegrationContext* context_;
-};
-
-}  // namespace
 
 TsdfIntegrator::TsdfIntegrator(TsdfRuleVariant rule,
                                TsdfIntegrationOptions options)
@@ -38,8 +12,7 @@ void TsdfIntegrator::integrate(const HostVolumeView& volume,
                                const DepthFrame& frame) const {
   validate_frame(frame);
   const HostIntegrationContext context{frame.view(), options_};
-  const IntegrationSweep sweep{volume, context};
-  std::visit([&](const auto& rule) { sweep.run(rule); }, rule_);
+  HostIntegrationSweep::run(volume, context, rule_);
 }
 
 TsdfIntegrationOptions TsdfIntegrator::validated(

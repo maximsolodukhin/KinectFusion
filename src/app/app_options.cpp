@@ -7,12 +7,12 @@
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/raycasting.hpp>
+#include <kinectfusion/trilinear.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
 #include <kinectfusion/validation.hpp>
 #include <kinectfusion/vector.hpp>
 #include <kinectfusion/virtual_sensor.hpp>
 #include <kinectfusion/volume.hpp>
-#include <kinectfusion/volume_sampler.hpp>
 #include <string>
 
 #include "pipeline_config.hpp"
@@ -51,12 +51,18 @@ kinectfusion::TsdfRuleVariant AppOptions::tsdf_rule() const {
 }
 
 kinectfusion::PipelineConfig AppOptions::pipeline_config() const {
-  return kinectfusion::PipelineConfig{.name = "baseline",
-                                      .space = space,
-                                      .tsdf_rule = tsdf_rule(),
-                                      .integration = tsdf_options(),
-                                      .raycast = raycast_options(),
-                                      .volume = volume_geometry()};
+  return kinectfusion::PipelineConfig{
+      .name = "baseline",
+      .space = space,
+      .tsdf_rule = tsdf_rule(),
+      .integration = tsdf_options(),
+      .raycast = raycast_options(),
+      .volume = volume_geometry(),
+      .voxel = voxel_store_from_name(voxel_store),
+      .color = color_store_from_name(color_store),
+      .raycast_backend = raycast_backend_from_name(raycast_backend),
+      .storage = storage_layout_from_name(storage_layout),
+      .sparse_block_capacity = sparse_capacity};
 }
 
 kinectfusion::PipelineSetConfig AppOptions::pipeline_set_config() const {
@@ -76,7 +82,9 @@ kinectfusion::RaycastOptions AppOptions::raycast_options() const {
       .max_depth = max_depth,
       .tsdf_corner_policy = raycast_tsdf_from_valid_corners
                                 ? kinectfusion::CornerPolicy::kRequireAll
-                                : kinectfusion::CornerPolicy::kSkipMissing};
+                                : kinectfusion::CornerPolicy::kSkipMissing,
+      .cell_gradient_normals = cell_gradient_normals,
+      .seed_from_previous = raycast_seed_previous};
 }
 
 kinectfusion::RaycastCamera AppOptions::raycast_camera(
@@ -109,7 +117,8 @@ kinectfusion::TsdfIntegrationOptions AppOptions::tsdf_options() const {
       .max_depth = max_depth,
       .projective_distance = projective_tsdf_distance,
       .distance_scaled_truncation = distance_scaled_truncation,
-      .truncation_distance_scale = truncation_distance_scale};
+      .truncation_distance_scale = truncation_distance_scale,
+      .mode = integration_mode_from_name(integration_mode)};
 }
 
 kinectfusion::ProjectiveIcpOptions AppOptions::icp_options() const {
@@ -124,7 +133,8 @@ kinectfusion::ProjectiveIcpOptions AppOptions::icp_options() const {
       .max_condition_number = max_icp_condition_number,
       .device_graph_build = icp_capture_graph
                                 ? kinectfusion::IcpGraphBuild::kCaptured
-                                : kinectfusion::IcpGraphBuild::kExplicit};
+                                : kinectfusion::IcpGraphBuild::kExplicit,
+      .device_solve = icp_device_solve};
 }
 
 unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
@@ -143,98 +153,144 @@ unsigned int AppOptions::icp_iterations_for_level(unsigned int level) const {
 void configure_cli(CLI::App& app, AppOptions& app_options) {
   app.set_version_flag("--version", std::string{KINECTFUSION_VERSION});
   app.add_option("dataset", app_options.dataset_dir,
-                 "TUM RGB-D dataset directory");
+                 "TUM RGB-D dataset directory.");
   app.add_option("--frames", app_options.max_frames,
-                 "Maximum number of frames to process. Use -1 for all.");
+                 "Maximum number of frames to process. Set -1 to process all "
+                 "frames.");
   app.add_option("--volume-resolution", app_options.volume_resolution,
-                 "Cubic TSDF volume resolution in voxels.");
+                 "Number of voxels along each edge of the cubic TSDF volume.");
   app.add_option("--voxel-size", app_options.voxel_size,
-                 "Voxel size in meters.");
+                 "Edge length of one voxel, in meters.");
   app.add_option("--truncation-distance", app_options.truncation_distance,
-                 "TSDF truncation distance in meters.");
+                 "TSDF truncation distance, in meters.");
   app.add_option("--volume-camera-margin", app_options.volume_camera_margin,
-                 "Extra space behind the initial camera in meters.");
+                 "Extra volume space behind the initial camera, in meters.");
   app.add_option("--depth-scale", app_options.depth_scale,
-                 "Raw depth units per meter (TUM default 5000).");
+                 "Raw depth units for one meter. The TUM default is 5000.");
   app.add_option("--min-depth", app_options.min_depth,
-                 "Minimum usable depth in meters.");
+                 "Minimum usable depth, in meters. The pipeline ignores "
+                 "closer measurements.");
   app.add_option("--max-depth", app_options.max_depth,
-                 "Maximum usable depth in meters.");
+                 "Maximum usable depth, in meters. The pipeline ignores "
+                 "farther measurements.");
   app.add_option("--pyramid-levels", app_options.pyramid_levels,
-                 "Number of depth pyramid levels to build.");
+                 "Number of depth pyramid levels for tracking.");
   app.add_option("--icp-iterations", app_options.icp_iterations,
-                 "Fixed ICP iterations per level, or -1 for [10, 5, 4].");
+                 "Fixed number of ICP iterations for each pyramid level. Set "
+                 "-1 for the defaults [10, 5, 4].");
   app.add_option("--matching-distance", app_options.matching_distance,
-                 "Maximum ICP correspondence distance in meters.");
+                 "Maximum distance between ICP correspondences, in meters. "
+                 "The search rejects pairs that are farther apart.");
   app.add_option("--min-normal-dot", app_options.min_normal_dot,
-                 "Minimum ICP normal dot product. cos(15deg)=0.9659258.");
+                 "Minimum dot product between correspondence normals. The "
+                 "search rejects lower pairs. cos(15 deg) = 0.9659258.");
   app.add_option("--max-pose-update-translation",
                  app_options.max_pose_update_translation,
-                 "Maximum accepted ICP translation update in meters.");
+                 "Maximum accepted ICP translation update, in meters. A "
+                 "larger update fails the frame.");
   app.add_option("--max-pose-update-rotation",
                  app_options.max_pose_update_rotation,
-                 "Maximum accepted ICP rotation update in radians.");
+                 "Maximum accepted ICP rotation update, in radians. A larger "
+                 "update fails the frame.");
   app.add_option("--min-icp-eigenvalue", app_options.min_icp_eigenvalue,
-                 "Minimum accepted ICP normal-system eigenvalue.");
+                 "Minimum eigenvalue of the ICP normal system. A smaller "
+                 "value fails the frame as unconstrained.");
   app.add_option("--max-icp-condition-number",
                  app_options.max_icp_condition_number,
-                 "Maximum accepted ICP normal-system condition number.");
+                 "Maximum condition number of the ICP normal system. A "
+                 "larger value fails the frame as unstable.");
+  app.add_option("--voxel", app_options.voxel_store,
+                 "Storage of the geometric TSDF voxel. 'float' uses 8 bytes. "
+                 "'quantized' (int16) and 'bf16' use 4 bytes.");
+  app.add_option("--color", app_options.color_store,
+                 "Storage of the volume color. 'float' fuses color into "
+                 "16-byte color voxels. 'none' stores no color and renders "
+                 "shaded geometry.");
+  app.add_flag("--cell-normals", app_options.cell_gradient_normals,
+               "Ablation: compute raycast normals from the 8 corners of the "
+               "final sample. The default uses six extra trilinear samples.");
+  app.add_flag("--raycast-seed-previous", app_options.raycast_seed_previous,
+               "Ablation: start each ray just in front of the surface from "
+               "the last frame. The default starts at the minimum depth.");
+  app.add_option("--storage", app_options.storage_layout,
+                 "Volume storage layout. 'dense' stores every voxel. "
+                 "'sparse' allocates 8^3 voxel blocks along the truncation "
+                 "band and requires --integration band.");
+  app.add_option("--sparse-capacity", app_options.sparse_capacity,
+                 "Number of blocks in the sparse pool. Set 0 to use one "
+                 "quarter of the block count.");
+  app.add_option("--integration", app_options.integration_mode,
+                 "Integration sweep. 'full' updates all voxels each frame "
+                 "and carves free space. 'band' updates only blocks near the "
+                 "measured surface and does not carve; it is lossy.");
+  app.add_option("--raycast", app_options.raycast_backend,
+                 "Raycast backend. 'march' samples every step. "
+                 "'bitmap-march' skips empty blocks with identical output. "
+                 "'band-march' skips far-from-surface blocks with "
+                 "approximate output.");
+  app.add_flag("--icp-device-solve", app_options.icp_device_solve,
+               "Ablation: run the whole ICP Gauss-Newton loop on the GPU, "
+               "with one synchronization for each pyramid level.");
   app.add_flag("--icp-capture-graph", app_options.icp_capture_graph,
-               "Ablation: build the device ICP reduction graph by stream "
-               "capture instead of the explicit node API.");
+               "Ablation: record the device ICP reduction graph with stream "
+               "capture. The default builds it with the explicit node API.");
   app.add_flag("--projective-tsdf-distance,!--no-projective-tsdf-distance",
                app_options.projective_tsdf_distance,
-               "Use lambda-corrected projective TSDF distance.");
+               "Use the lambda-corrected projective TSDF distance. Disable "
+               "to use the camera z distance.");
   app.add_flag("--distance-scaled-truncation,!--no-distance-scaled-truncation",
                app_options.distance_scaled_truncation,
-               "Increase TSDF truncation support linearly with depth.");
+               "Widen the TSDF truncation band linearly with measured "
+               "depth.");
   app.add_option("--truncation-distance-scale",
                  app_options.truncation_distance_scale,
-                 "Linear TSDF truncation support increase per meter.");
+                 "Widening of the truncation band for each meter of depth.");
   app.add_option("--tsdf-variant", app_options.tsdf_variant,
-                 "TSDF update rule: 'angle-weighted' (cos(theta)/depth "
-                 "observation weighting) or 'classic' (constant weight).")
+                 "TSDF update rule. 'angle-weighted' weights observations by "
+                 "cos(theta)/depth. 'classic' uses a constant weight.")
       ->check(CLI::IsMember({"angle-weighted", "classic"}));
   app.add_option("--space", app_options.space,
-                 "Memory space to run the pipeline in ('cpu' or 'cuda'; "
-                 "falls back to cpu with a warning when unavailable).")
+                 "Memory space of the pipeline: 'cpu' or 'cuda'. Falls back "
+                 "to cpu with a warning when cuda is unavailable.")
       ->transform(
           CLI::CheckedTransformer(memory_space_names(), CLI::ignore_case));
-  app.add_option(
-      "--pipelines", app_options.pipelines_config,
-      "TOML file describing an ablation pipeline set ([[pipeline]] tables); "
-      "CLI options provide the per-pipeline defaults.");
-  app.add_option(
-      "--compare-every", app_options.compare_every_n_frames,
-      "Frame cadence for pipeline deviation stats (<= 0 disables them).");
+  app.add_option("--pipelines", app_options.pipelines_config,
+                 "TOML file that describes an ablation pipeline set "
+                 "([[pipeline]] tables). CLI options give the defaults for "
+                 "each pipeline.");
+  app.add_option("--compare-every", app_options.compare_every_n_frames,
+                 "Number of frames between pipeline deviation reports. Set 0 "
+                 "or less to disable the reports.");
   app.add_flag("--bilateral-filter,!--no-bilateral-filter",
                app_options.bilateral_filter,
-               "Enable bilateral depth filtering for tracking.");
+               "Filter the tracking depth with a bilateral filter.");
   app.add_option("--bilateral-radius", app_options.bilateral_radius,
-                 "Bilateral filter radius in pixels.");
+                 "Radius of the bilateral filter, in pixels.");
   app.add_option("--bilateral-spatial-sigma",
                  app_options.bilateral_spatial_sigma,
-                 "Bilateral filter spatial sigma in pixels.");
+                 "Spatial sigma of the bilateral filter, in pixels.");
   app.add_option("--bilateral-depth-sigma", app_options.bilateral_depth_sigma,
-                 "Bilateral filter depth sigma in meters.");
+                 "Depth sigma of the bilateral filter, in meters.");
   app.add_flag("--interactive-relocalization",
                app_options.interactive_relocalization,
-               "Pause after tracking failure before continuing.");
+               "Pause after a tracking failure. Continue on user input.");
   app.add_flag("--preload", app_options.preload_frames,
-               "Decode the whole dataset into memory up front (~2 MB per "
-               "frame) so the frame loop measures pure pipeline throughput.");
+               "Decode the whole dataset into memory before the frame loop "
+               "(~2 MB for each frame). The loop then measures pure pipeline "
+               "throughput.");
   app.add_option("--output-dir", app_options.output_dir,
                  "Directory for raycast images and point clouds.");
   app.add_flag("--write-raycast-images,!--no-write-raycast-images",
                app_options.write_raycast_images,
-               "Write raycast color images as PNG files.");
+               "Write the raycast color images as PNG files.");
   app.add_flag("--write-point-clouds,!--no-write-point-clouds",
                app_options.write_point_clouds,
-               "Write raycast point clouds as binary PLY files.");
+               "Write the raycast point clouds as binary PLY files.");
   app.add_flag(
       "--raycast-tsdf-from-valid-corners,!--no-raycast-tsdf-from-valid-corners",
       app_options.raycast_tsdf_from_valid_corners,
-      "Interpolate raycast TSDF only from fully valid voxel corners.");
+      "Interpolate the raycast TSDF only where all 8 corners are valid. The "
+      "default reweights the valid corners.");
 }
 
 void validate_options(const AppOptions& app_options) {

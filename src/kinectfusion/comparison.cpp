@@ -17,17 +17,21 @@ VolumeComparison Comparator::compare(ConstHostVolumeView primary,
   PairTally tally;
   Deviation distance;
   Deviation weight;
+
   const std::span our_voxels = primary.voxel_span();
   const std::span their_voxels = reference.voxel_span();
+
   for (std::size_t i = 0; i < our_voxels.size(); ++i) {
     const Voxel& ours = our_voxels[i];
     const Voxel& theirs = their_voxels[i];
-    if (!tally.classify(ours.weight > 0.0F, theirs.weight > 0.0F)) {
+    if (!tally.classify(ours.weight_value() > 0.0F,
+                        theirs.weight_value() > 0.0F)) {
       continue;
     }
-    distance.add(std::abs(ours.distance - theirs.distance));
-    weight.add(std::abs(ours.weight - theirs.weight));
+    distance.add(std::abs(ours.tsdf() - theirs.tsdf()));
+    weight.add(std::abs(ours.weight_value() - theirs.weight_value()));
   }
+
   return VolumeComparison{.compared_voxels = tally.compared,
                           .only_primary = tally.only_primary,
                           .only_reference = tally.only_reference,
@@ -49,16 +53,20 @@ SurfaceMapsComparison Comparator::compare(const SurfaceMaps& primary,
   PairTally tally;
   Deviation point_distance;
   Deviation normal_angle;
+
   const auto& our_points = primary.points.data();
   const auto& our_normals = primary.normals.data();
+
   const auto& their_points = reference.points.data();
   const auto& their_normals = reference.normals.data();
+
   for (std::size_t i = 0; i < our_points.size(); ++i) {
     if (!tally.classify(
             valid_surface_pixel(our_points.at(i), our_normals.at(i)),
             valid_surface_pixel(their_points.at(i), their_normals.at(i)))) {
       continue;
     }
+
     point_distance.add(norm(our_points.at(i) - their_points.at(i)));
     normal_angle.add(angle_between(our_normals.at(i), their_normals.at(i)));
   }

@@ -236,7 +236,8 @@ class SurfaceRaycast {
       // Without color, render headlight-shaded geometry to keep the raycast
       // images inspectable.
       const Vec3f view = normalized(pose_.translation - surface);
-      const float intensity = compat::max(0.0F, dot(*normal, view));
+      const float intensity =
+          kMaxColorChannelValueF * compat::max(0.0F, dot(*normal, view));
 
       maps.colors.at(col, row) =
           pixel_from_color(make_vec3f(intensity, intensity, intensity));

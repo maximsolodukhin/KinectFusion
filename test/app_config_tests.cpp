@@ -2,6 +2,7 @@
 // must land in the config structs. This mapping has silently regressed
 // before, so each field is asserted against a non-default AppOptions.
 #include <catch2/catch_test_macros.hpp>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/icp_optimizer.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/raycasting.hpp>
@@ -27,6 +28,9 @@ namespace {
   options.raycast_tsdf_from_valid_corners = true;
   options.icp_device_solve = true;
   options.icp_capture_graph = true;
+  options.icp_damping = "diagonal";
+  options.icp_lambda = 0.25F;
+  options.icp_adaptive_damping = true;
   options.projective_tsdf_distance = false;
   options.distance_scaled_truncation = true;
   return options;
@@ -59,4 +63,7 @@ TEST_CASE("Every ICP knob reaches the tracker options", "[app_config]") {
 
   CHECK(icp.device_solve);
   CHECK(icp.device_graph_build == kinectfusion::IcpGraphBuild::kCaptured);
+  CHECK(icp.damping.mode == kinectfusion::IcpDampingMode::kDiagonal);
+  CHECK(icp.damping.lambda == 0.25F);
+  CHECK(icp.adaptive_damping);
 }

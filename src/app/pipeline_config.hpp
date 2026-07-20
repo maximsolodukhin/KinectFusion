@@ -2,6 +2,7 @@
 #define KINECTFUSION_SRC_APP_PIPELINE_CONFIG_HPP
 
 #include <filesystem>
+#include <kinectfusion/icp_correspondence.hpp>
 #include <kinectfusion/pipeline.hpp>
 #include <kinectfusion/pipeline_set.hpp>
 #include <kinectfusion/tsdf_integration.hpp>
@@ -37,6 +38,8 @@ memory_space_names();
 [[nodiscard]] kinectfusion::IntegrationMode integration_mode_from_name(
     std::string_view name);
 [[nodiscard]] kinectfusion::StorageLayout storage_layout_from_name(
+    std::string_view name);
+[[nodiscard]] kinectfusion::IcpDampingMode icp_damping_mode_from_name(
     std::string_view name);
 
 // File format: README "Ablation pipelines". Throws std::invalid_argument on

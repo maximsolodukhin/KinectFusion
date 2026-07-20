@@ -49,8 +49,11 @@ struct AppOptions {
       kinectfusion::kDefaultMaxIcpUpdateRotationRadians};
   float min_icp_eigenvalue{kinectfusion::kDefaultMinIcpSystemEigenvalue};
   float max_icp_condition_number{kinectfusion::kDefaultMaxIcpConditionNumber};
+  float icp_lambda{kinectfusion::kDefaultIcpDampingLambda};
   bool icp_capture_graph{false};
   bool icp_device_solve{false};
+  bool icp_adaptive_damping{false};
+  std::string icp_damping{"none"};
   std::string voxel_store{"float"};
   std::string color_store{"float"};
   std::string raycast_backend{"march"};
